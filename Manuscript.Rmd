@@ -1,0 +1,1058 @@
+---
+title: "Spatio-temporal data integration for species distribution modelling in R-INLA"
+author:
+ - "Fiona Seaton*, Susan Jarvis, Pete Henrys"
+ - "*UK Centre for Ecology & Hydrology, Lancaster Environment Centre, Lancaster, UK*"
+ - "*Corresponding author email: fseaton@ceh.ac.uk"
+ - "Short title: Spatio-temporal data integration for SDMs"
+date: "`r format(Sys.time(), '%B %Y')`"
+output:
+  bookdown::word_document2:
+    number_sections: FALSE
+    reference_docx: "~/Custom Office Templates/pandoc_templ.docx"
+bibliography: bibliography.bib  
+csl: methods-in-ecology-and-evolution.csl
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, dpi = 300)
+```
+
+```{r libraries, warning = FALSE}
+library(data.table)
+library(sf)
+library(dplyr) 
+library(tidyr)
+library(igraph)
+library(ggplot2)
+theme_set(theme_classic())
+library(patchwork)
+library(lubridate)
+library(INLA)
+inla.setOption(scale.model.default=FALSE)
+
+```
+
+
+
+# Abstract
+
+1. Species distribution modelling is a highly used tool for understanding and predicting biodiversity change, and recent work has emphasised the importance of understanding how species distributions change over both time and space. Spatio-temporal models require large amounts of data spread over time and space, and as such are clear candidates to benefit from model-based integration of different data sources. However, spatio-temporal models are highly computationally intensive and integrating different data sources together can make this approach even more unfeasible for ecologists.
+2. Here we demonstrate how the R-INLA methodology can be used for model-based data integration for spatio-temporally explicit modelling of species distribution change. We demonstrate that this method can be applied to both point and areal data with two contrasting case studies, one using the SPDE approach for modelling spatio-temporal change in the Gatekeeper butterfly (*Pyronia tithonus*) across Great Britain and the second using a spatio-temporal areal model to describe change in caddisfly (Trichoptera) populations across the River Thames catchment.
+3. We show that in the caddisfly case study integrating together different data sources led to greater understanding of the change in abundance across the River Thames both seasonally and over five years of data. However, in the butterfly case study moving to a spatio-temporal context exacerbated differences between the data sources and resulted in no greater ecological insight into change in the Gatekeeper population.
+4. Our work provides a computationally feasible framework for spatio-temporally explicit integration of data within SDMs, and demonstrates both the potential benefits and the challenges in applying this methodology to real ecological data.
+
+# Keywords
+
+Citizen science; Data integration; Integrated distribution models; Species distribution models; Spatio-temporal models; Integrated Nested Laplace Approximation; Stochastic Partial Differential Equation;
+
+\newpage
+
+# Introduction
+
+Species distribution modelling (SDM) is a popular tool in ecological research because it provides an empirical relationship between environmental factors and the spatial preferences of a particular species [@Elith2009]. It therefore provides a basis for understanding the most influential factors governing species’ distributions, quantifying the impacts of changes in environmental factors and for consideration of effective conservation and management strategies [@Franklin2010]. Most SDMs are purely spatial in nature, but there is increasing interest in spatio-temporal modelling of species distributions, where the spatial distribution itself is explicitly a function of time (e.g. @Fidino2022; @Johnston2022; @Ward2015). Spatio-temporal models help to understand change in a spatially explicit manner and therefore the areas that are changing most, those that are more at risk, and those where certain factors are having disproportionate effect [@Ward2015]. However, a major barrier to uptake of spatio-temporal SDMs is the availability of data with sufficient spatial and temporal coverage. Most SDMs are based on single sources of empirical data and this can be limiting, with estimated relationships within the model and specific parameters only as good as the data underpinning them [@Fourcade2018; @GuilleraArroita2015]. 
+
+In recent years there has been a proliferation of ecological data from a variety of sources, with increasing uptake and delivery of citizen science schemes as well as new technologies [@Johnston2022]. Concomitantly there has been increasing interest in how to integrate these disparate data sources to increase our insight into species distributions [@Isaac2020; @Miller2019]. Whilst traditional, purely spatial, species distribution models stand to benefit significantly from data integration, spatio-temporal models have an even stronger requirement for data [@Bakka2018]. This is because the same data requirements exist as for the purely spatial case, but that the gradient coverage is also required over time as well, hence implying that good spatial coverage is needed for each individual time point. Many data sources used for the modelling of species distributions are unstructured and vary in their observation intensity and accuracy across space and time [@Johnston2022]. The ability to integrate different data sources therefore should offer significant potential for the modelling of species distributions across time and space. However, careful consideration throughout this process needs to be applied to thinking about the differential coverage and biases across the data sources, as in many cases integration alone cannot be enough to integrate out bias in the data collection [@Simmonds2020]. This is particularly important when considering spatio-temporal models, as data sources can show biases across time that vary by space which will impact not just the confidence of the model, but also the predictions and inferences gained from the model.
+
+Recent work has demonstrated the value of integrating data for spatio-temporally explicit modelling of species distributions for understanding human-wildlife conflicts [@Fidino2022], yet methods previously used are highly computationally intensive. Within this work we present a method for integrated modelling of spatio-temporal change used the R-INLA methodology, which uses Integrated Nested Laplace Approximations for Bayesian inference allowing for efficient estimation of highly complex spatio-temporal models [@Bakka2018; @Rue2009]. The methods presented here allow for the modelling of spatio-temporal change including interactions between space and time such that different spatial regions can change in different ways [@Blangiardo2013; @Cameletti2013]. We apply this integrated spatio-temporal model to two case studies, the first examining the spread of the Gatekeeper butterfly (*Pyronia tithonus*) across Great Britain according to two separate recording schemes and the second evaluating change in caddisfly (Trichoptera) populations across the River Thames comparing governmental monitoring to governmental monitoring plus citizen science schemes. The first case study lends itself to a pointwise spatio-temporal modelling approach and also provides an opportunity to consider how to integrate two spatially biased but information rich data sources, while the second case study lends itself to an areal spatio-temporal modelling approach and offers an opportunity to consider how to integrate data sources where one is far more patchy spatially than the other.
+
+
+
+# Methods
+
+## Modelling approach
+
+There are multiple ways of integrating multiple data sources in a single model, and here we focus on shared modelling where joint likelihoods are used to model the different data sources [@Pacifici2017]. Previous studies have examined how methods such as point process models can be used to integrate together different data sources in a spatially explicit manner to infer species distributions (e.g. @Fletcher2019). The concept behind model-based data integration is that different data sources are observing some latent state, here the true species distribution, using a variety of different observation models. Therefore, by jointly modelling the datasets together with their observation models the latent species distribution can be inferred. Here we model the latent species distribution as a distribution over space and time, which requires explicit consideration of the dependence structure of observations over these dimensions. Doing so enables any spatial and / or temporal effects unaccounted for by model covariates, to be represented within the model. From a modelling perspective this is achieved by including spatio-temporal random effects within the model as follows. Suppose we observe a species count $Y$ at location $s$ at time $t$ and this is assumed to follow a Poisson distribution with mean given by the product of the expected count ($E_{s,t}$) and the relative suitability for the species ($\mu_{s,t}$):
+
+\begin{equation}
+Y(s,t) \sim \mathrm{Poisson}(E_{s,t} \cdot \mu_{s,t} ) (\#eq:poisson)
+\end{equation}
+
+Then we can model the (log) relative suitability as a function of $K$ spatially and temporally indexed covariates ($z_{s,t}$) and a spatio-temporal random effect $\omega_{s,t}$:
+
+\begin{equation}
+\log(\mu_{s,t}) = \alpha_0 + \sum^K_{k=1} \alpha_k z_{k,s,t} + \omega_{s,t} (\#eq:mu)
+\end{equation}
+
+In practice the spatio-temporal random effect can be a sum of spatial and temporal structured and unstructured effects plus an interaction. The random effect structure can allow for consistent change over time across the whole spatial field, or allow different parts of the spatial field to change in different directions over time - i.e. a spatio-temporal interaction. Both the spatial and the temporal effects, as well as their interaction, can be specified in different ways, such as the difference between specifying change over time as a random walk or as an autoregressive process. Therefore, the term spatio-temporal models represent a diverse set of different model configurations that incorporate differing assumptions and constraints on the model fit. We detail the model configurations we have chosen to use within this manuscript below, however our approach to using INLA for integrating data in spatio-temporal models can be generalised to other model configurations supported by INLA.
+
+When integrating data from different sources, the same principles extend from the purely spatial case. Following the principles set out in @Simmonds2020, the concept of shared covariate effects and shared random fields in the linear predictor extend to the spatio-temporal case, so for two data sources P and Q, we model as a function of its own intercept ($\alpha_0$), shared covariate effects ($\alpha_K$), and a shared spatio-temporal effect ($\omega_{s,t}$), as in Equations \@ref(eq:Pmod) and \@ref(eq:Qmod). Dataset-specific spatial ($\phi_s$), or spatio-temporal ($\phi_{s,t}$), effects can also be added where appropriate to account for spatial or spatio-temporal biases within the data sources as in Equation \@ref(eq:Qmod). 
+
+\begin{equation}
+\log(\mu_{s,t,P}) =  \alpha_{P,0} + \sum^K_{k=1} \alpha_k z_{k,s,t} + \omega_{s,t} (\#eq:Pmod)
+\end{equation}
+
+\begin{equation}
+\log(\mu_{s,t,Q}) =  \alpha_{Q,0} + \sum^K_{k=1} \alpha_k z_{k,s,t} + \omega_{s,t} + \phi_{s,t}  (\#eq:Qmod)
+\end{equation}
+
+The spatio-temporal random effect(s) can take multiple forms depending on the structure of the data. Spatial structures commonly used within the species distribution modelling literature are approaches that use Gaussian random fields to model species occurrence over a defined region based upon estimating the spatial covariance between points across the field. Alternatively, data that is provided on an areal basis can be modelled using (intrinsic) conditional auto-regressive models, where the model includes an effect of the values of neighbouring regions. The INLA methodology can be used to fit models using both of these methods, is often used in integrated species distribution models and less computationally intensive than MCMC based methods [@Blangiardo2013; @Isaac2020]. 
+
+
+### Point data
+
+Here we model the spatial dependency between point data for any given timepoint ($\omega_{s,*}$ in \@ref(eq:mu)) through the stochastic partial differential equations (SPDE) approach for approximating a Gaussian random field [@Lindgren2011]. This approximates the Matérn covariance function across a defined region in a more computationally efficient way compared to estimation of the entire covariance function so that computational time does not scale as a power law of the number of locations. The Matérn covariance function defines how much spatial relationship there is between points, given by a function of $\sigma$ (the marginal standard deviation), $\rho$ (the range parameter), and $\nu$ (a smoothness parameter):
+
+\begin{equation}
+c_v(r;\sigma,\rho) = \sigma^2\frac{2^{1-\nu}}{\Gamma(\nu)} \left(\sqrt{8\nu}\frac{r}{\rho}\right)^\nu  K_\nu\left(\sqrt{8\nu}\frac{r}{\rho}\right) (\#eq:matern)
+\end{equation}
+
+where $K_\nu$ is the modified Bessel function of the second kind, order $\nu$. Within INLA (and elsewhere) the simplification for specific values of $\nu$ is often used, as when $\nu = p + 1/2, p \in \mathbb{N}^+$ this covariance function can be expressed as a product of an exponential and a polynomial of order $p$. Therefore $\nu$ is usually fixed to some positive half integer and not estimated as part of the model fitting process.
+
+@Fuglstad2016 reparameterised this function to enable the introduction of a penalised complexity (PC) prior, as introduced by @Simpson2017. These PC priors involve setting a base model which has the highest probability weight upon it, and enforcing a constraint such that the probability declines the further away from the base model you get. Within the SPDE approach the base model is represented by a model with infinite range and zero covariance - i.e. no spatial pattern. Within a 2-dimensional space this penalised complexity prior corresponds to:
+
+\begin{equation}
+\pi(\sigma,\rho)=\lambda_\rho\lambda_\sigma\rho^{-2}\exp(-\lambda_\rho\rho^{-1}-\lambda_\sigma\sigma),\quad \sigma > 0, \rho > 0 (\#eq:pcspde)
+\end{equation}
+
+Where $\mathrm{P}(\rho<\rho_0) = \alpha_1$ and $\mathrm{P}(\sigma > \sigma_0) = \alpha_2$ are achieved by
+
+\begin{equation}
+\lambda_\rho = -\log(\alpha_1)\rho_0 \quad \mathrm{and} \quad \lambda_\sigma = - \frac{\log(\alpha_2)}{\sigma_0} (\#eq:pcspde2)
+\end{equation}
+
+The reason for this PC parameterisation is that the user must specify both a limit and the total probability that is given to be above (for $\sigma$) or below (for $\rho$) this limit. 
+
+The change by year is modelled as an order one autoregressive process as in Equation \@ref(eq:ar1), with a PC prior upon the autoregressive parameters with the base model being no change over time [@Sorbye2017]. As the stochastic element of this model ($\epsilon$) is different at every point in space and time, this therefore does not enforce that the spatial field must change in the same way across the whole field, and instead allows for the direction and magnitude of the change over time to vary across the spatial field and between time points.
+
+\begin{equation}
+\omega_{*,t=1} \sim \mathcal{N}(0,(\tau_y(1 - r^2))^{-1}) (\#eq:ar1)
+\end{equation}
+
+$$ \omega_{*,t=i} = r \omega_{*,t=i-1} + \epsilon_{*,i}, \quad \epsilon \sim \mathcal{N}(0,\tau_y^{-1}) \quad i = 2,...,n $$
+
+where the lag one correlation $|r| < 1$. Within INLA this is parameterised with the hyperparameters $\theta_1,\theta_2$, where $\theta_1$ is the log of the marginal precision (Equation \@ref(eq:theta1)) and $\theta_2$ is the logit of the lag one correlation (Equation \@ref(eq:theta2)). 
+
+\begin{equation}
+\theta_1 = \log(\tau_y(1 - r^2)) (\#eq:theta1)
+\end{equation}
+
+\begin{equation}
+\theta_2 = \log(\frac{1 + r}{1 - r}) (\#eq:theta2)
+\end{equation}
+
+Within the data integration there is assumed to be a shared spatio-temporal field between the two datasets, with each dataset having its own intercept, survey effort parameters, and family-specific scale parameters (i.e. $\theta$ within the negative binomial family).
+
+### Areal data
+
+We model areal data using the Besag York Mollié (BYM) model, which is a combination of the Besag model and an independent random noise (IID) model [@Besag1991]. The IID model simply defines $\omega_{s,*}$ to be a vector of independent and Gaussian distributed observations with precision $\tau_1$. 
+
+Within the Besag model each $\omega_{i,*}$ is defined as dependent on the sum of the weighted values of its neighbours:
+
+\begin{equation}
+\omega_{i,*}|\omega_{j,*},i\neq j,\tau_2 \quad \sim \quad \mathcal{N}\left(\frac{1}{n_i}\sum_{i\sim j}{\omega_{j,*}},\frac{1}{n_i\tau_2}\right)  (\#eq:besag)
+\end{equation}
+
+
+where $n_i$ is the number of neighbours of node $i$, $i \sim j$ indicates that the two nodes $i$ and $j$ are
+neighbours.
+
+The BYM model combines this model together such that:
+
+\begin{equation}
+\omega_{s,*} = \binom{besag + iid}{besag} (\#eq:bym)
+\end{equation}
+
+
+Within this manuscript we use the parameterisation of the BYM model explored by @Riebler2016 within the PC framework, where the base model is no spatial pattern or differences between areas. Therefore, the parameters that we can define priors over this BYM model for (referred to by INLA as hyperparameters) are the marginal precision ($\tau_b$) and the proportion of the variation explained by the spatial component of the model ($\phi$). Priors are defined on these on the log and logit scale respectively. The default PC prior for the precision is a type-2 Gumbel distribution:
+
+\begin{equation}
+\pi(\tau_b) = \frac{\lambda}{2}\tau_b^{-3/2}\exp(-\lambda\tau_b^{-1/2}),\quad \tau_b > 0, \lambda > 0 (\#eq:gumbel)
+\end{equation}
+
+Where $\lambda = -\ln(\alpha)/U$
+
+The default prior within INLA is $\alpha = 0.01$ and $U = 1$, which corresponds to a standard deviation of around 0.3 [@Simpson2017]. The PC prior for $\phi$ is dependent upon the graph within the BYM model, and is derived for each model with computational cost that scales to the cube of the number of graph components. The parameters that can be specified for this prior are $u$ and $\alpha$, where the probability that $\phi < u$ is equal to $\alpha$. The defaults within INLA (at the time of writing) are $u = 0.5$ and $\alpha = 0.5$ which gives equal weighting to the spatial component explaining less than or more than half of the marginal variation. We model change over time as an interaction with the spatial model, with the change over time modelled as an autoregressive model of order one and assuming no effect of the past state of neighbouring regions upon the current state of the area.
+
+In addition to the spatio-temporal model we can also add other model elements, such as a seasonal term and/or some covariates (e.g. survey effort, environmental conditions). The seasonal model with periodicity $m$ for some random vector $(x_1, ..., x_n), n > m$ can be obtained assuming the sums $x_i + x_{i + 1} + ... x_{i + m - 1}$ are independent Gaussian with precision $\tau_s$. The density for $\mathbf{x}$ is derived from the $n - m + 1$ increments as in Equation \@ref(eq:season).
+
+\begin{equation}
+\pi(\mathbf{x} | \tau_s) = \tau_s^{\frac{n-m+1}{2}}\exp\{-\frac{1}{2}\mathbf{x}^T\mathbf{Qx} \} (\#eq:season)
+\end{equation}
+
+Where $\mathbf{Q} = \tau_s \mathbf{R}$ and $\mathbf{R}$ is the structure matrix representing the neighbourhood structure of the seasonal model (e.g. that March follows February which in turn follows January), and the default prior on $\tau_s$ is a PC prior on precision as in the BYM model.
+
+Within the data integration there is assumed to be shared spatio-temporal and seasonal models between the two datasets, with each dataset having its own intercept, survey effort covariates if appropriate, and family-specific scale parameters (i.e. $\theta$ within the negative binomial family). One dataset can also be assumed to have a separate spatial model (that does not update with year) to represent the differing spatial bias within the dataset (i.e. there is also a $\phi_{s,t}$ term within the model).
+
+
+## Case studies
+
+### Gatekeeper butterfly
+
+To demonstrate the method upon point data we modelled the spread of the Gatekeeper butterfly across Great Britain from 2005 to 2014, using the UK Butterfly Monitoring Scheme (UKBMS) and non-avian data collected by the British Trust for Ornithology plus partner organisations (BTO) as part of their bird monitoring. The UKBMS data consisted of abundance at transects that are regularly surveyed by volunteers for all butterflies, while the BTO data consisted of observations of butterflies submitted by citizen scientists as part of their Garden BirdWatch and BirdTrack schemes that are reported as presence-only records of butterflies. The UKBMS gatekeeper abundance data and the BTO presence data consisted of ~6000 measurements each once data processing as detailed below was carried out, with both data sources having more observations to the south of GB and showing some evidence of increasing numbers of observations over time (Figures S1-2).
+
+We aggregated the BTO data to the 10km grid square level, with the total number of gatekeeper observations within that square within the year being modelled as a function of the total list length (i.e. unique number of butterfly species) observed in that square within that year. Square/year combinations that had ten or fewer observations across all butterfly species within July and August (i.e. peak flight period of the Gatekeeper butterfly) were removed from the analysis. This resulted in a count response with a range from 0 to 19 and a median of 2, which then allowed modelling of both the BTO and UKBMS data as count variables.
+
+UKBMS data was represented as the generalised abundance index, which gives an annual abundance value that accounts for whether the timings of site visits across the year corresponded with the seasonal pattern of butterfly emergence [@UKBMSIndices; @Dennis2016]. Sites that had no Gatekeeper butterflies observed at any point were not reported with a Gatekeeper abundance value, so if the site was not recorded as missing data for any other butterfly (other than nine common butterflies with differing flight period to the Gatekeeper) then it was added to the dataset as a zero. The nine common butterflies with differing flight period to the Gatekeeper were the Orange-tip (*Anthocharis cardamines*), Peacock (*Aglais io*), Green-veined White (*Pieris napi*), Speckled Wood (*Pararge aegeria*), Brimstone (*Gonepteryx rhamni*), Small White (*Pieris rapae*), Large White (*Pieris brassicae*), Small Tortoiseshell (*Agalis urticae*), and the Common Blue (*Polyommatus icarus*). This abundance index is reported as a count variable, with a range within our data of between 0 and ~3000 and a median of 53. UKBMS site abundances were modelled as a function of transect length to account for varying survey effort.
+
+The mesh within the SPDE model was set up to cover the entirety of Great Britain with maximum edge length 50km, and to have a surrounding buffer area with maximum edge length 300km. This mesh parameterisation was chosen as it balanced creating a mesh of regular density across GB with computational feasibility. The spatial field updated every year with an autoregressive process of order one, no finer temporal resolution was considered due to the UKBMS abundance indices being given as annual values. PC priors for the spatial covariance were specified such that only 1% of probability mass for the scale parameter was below 100km, and 1% probability mass that the standard deviation was greater than 5. The $\nu$ parameter was fixed to the INLA default of 1. For the autoregressive process priors, 80% of the probability was set that the correlation was between 0.8 and 1.0, and only 1% probability that the precision was greater than 0.25. 
+
+### Caddisfly
+
+We modelled caddisfly abundance across the River Thames catchment from 2015-2019 in a spatio-temporal areal model, combining together structured surveys of the freshwater macroinvertebrate communities run by governmental agencies with a citizen science scheme. Riverfly (including caddisflies, stoneflies and mayflies) abundance is an important indicator of river quality, and as such is monitored by the Environment Agency (EA) in the UK. There is also an active citizen science community that regularly monitors sites for riverfly abundance under the Anglers' Riverfly Monitoring Initiative (ARMI) run by the Riverfly Partnership. Both schemes use standardised kick sampling to collect riverflies and other taxa from the water. To account for differences in taxonomic resolution between schemes all caddisfly records were combined to calculate an overall caddisfly count per sample. 
+
+Representing the structure of a river is a challenging prospect within analyses of river quality, as movement can be constrained to the river and may show different patterns for moving upstream versus downstream. Our study organism, the caddisfly, we assume finds it as easy to move upstream as it does downstream for the ease of analysis. Here we aggregated stretches of river into a smaller number of connected components and supplied the edgelist of connections between this subset of river components into the BYM model. For ease of computation we limited this to 137 areas across the entire Thames catchment, each of which can contain multiple sites. These components were created by running a fast greedy modularity optimisation algorithm upon the whole Thames river network using the igraph package [@Clauset2004; @Csardi2006]. We found that the EA data sampled from all of the components, while the ARMI data was limited to a small number of components but involved far more visits on average per site - with ~7 visits a year on average in the ARMI data compared to ~2 in the EA data. In addition to the spatio-temporal BYM model which updates every year we included a seasonal component to the model which depended upon the month of the year, as we expected higher counts of caddisflies in the spring and summer and we had the precise dates of survey for both data sources. Within the integrated model the spatio-temporal and seasonal components were assumed to be shared between the EA and ARMI data, with an additional IID model being added for the areas within the ARMI data in order to account for the spatial patchiness of the ARMI data. As there are few contiguous river sections included in the ARMI data an IID model was used instead of a spatially explicit model. The intercepts and dispersion parameter for the negative binomial distribution for the two sources of data were modelled separately.
+
+For the three precision parameters we used the PC prior with $\alpha = 0.01$ and $u$ set to 0.75 for the seasonal component, 0.5 for the marginal variation of the BYM model and 0.25 for the temporal component. This represents a decreasing level of variation expected to be explained by the three components. The mixing parameter ($\phi$) within the BYM model was set to $u,\alpha = 0.5$, i.e. giving equal probability to $\phi$ being higher or lower than 0.5. The lag one correlation parameter within the AR1 model ($\rho$) was given the PC prior with base model assuming no change, and with $u, \alpha = 0.9$, i.e. giving 90% of the probability to that the temporal auto-correlation is > 0.9 as we assume minimal change per year across the time modelled at the broad spatial scales of interest. The PC prior for the precision of the ARMI-specific IID model had $u = 0.5$.
+
+
+# Results
+
+
+## SPDE - Gatekeeper butterfly integration
+
+```{r butterfly data read ukbms} 
+ukbms_site <- fread("Data/ukbmssitelocationdata2020.csv") %>%
+  rename_with(function(x) gsub(" |\\.","_",x))
+ukbms_indices <- fread("Data/ukbmssiteindices2020.csv") %>%
+  rename_with(function(x) gsub(" |\\.","_",x))
+
+# get full list of sites surveyed in those years. Removing sites that didn't have
+# enough visits for at least one butterfly species (quite restrictive, needs
+# revisiting - have tried removing butterflies with >5000 0s and differing flight
+# periods to gatekeeper)
+ukbms_site_0016 <- ukbms_indices %>% group_by(SITE_CODE, YEAR) %>%
+  # remove common butterflies with lots of -2s and differing flight period from Gatekeeper
+  filter(!COMMON_NAME %in% c("Orange-tip","Peacock","Green-veined White",
+                             "Speckled Wood","Brimstone","Small White",
+                             "Large White","Small Tortoiseshell","Common Blue")) %>%
+  summarise(MIN_INDEX = min(SITE_INDEX), .groups = "drop") %>%
+  filter(MIN_INDEX >= 0) %>%
+  left_join(select(ukbms_site, SITE_CODE = Site_Number, Survey_type,
+                   Gridreference, Easting, Northing, Length, Country), by = "SITE_CODE") %>%
+  filter(Survey_type == "UKBMS") %>%
+  filter(YEAR > 2000 & YEAR < 2018)
+
+# Complete list of sites with 0 observations of gatekeeper in UKBMS, and remove sites
+# with low number of visits (i.e. GAI -2)
+ukbms_gatekeeper <- filter(ukbms_indices, COMMON_NAME == "Gatekeeper" &
+                             YEAR > 2000 & YEAR < 2018) %>%
+  filter(SITE_INDEX >= 0) %>%
+  mutate(Gatekeeper_Abundance = SITE_INDEX,
+         Gatekeeper_Presence = ifelse(SITE_INDEX == 0, 0, 1)) %>%
+  distinct() %>%
+  left_join(select(ukbms_site, SITE_CODE = Site_Number, Survey_type,
+                   Gridreference, Easting, Northing, Length, Country), 
+            by = "SITE_CODE") %>%
+  full_join(ukbms_site_0016) %>% 
+  mutate(Gatekeeper_Abundance = replace_na(Gatekeeper_Abundance, 0),
+         Gatekeeper_Presence = replace_na(Gatekeeper_Presence, 0)) %>%
+  filter(!is.na(Gridreference))
+
+```
+
+```{r butterfly data read BTO}
+bto_data <- fread("Data/bto-records.csv")
+
+bto_gatekeeper <- bto_data %>%
+  filter(`State/Province` %in% c("England", "Scotland", "Wales")) %>%
+  rename(OSGR10K = `OSGR 10km`, Year = `Start date year`) %>%
+  group_by(OSGR10K, Year) %>%
+  summarise(List_Length = length(unique(`Scientific name`)),
+            Gatekeeper = sum(`Scientific name` == "Pyronia tithonus"),
+            Number_Obs = sum(`Start date month` %in% c(7,8)),
+            .groups = "drop") %>%
+  filter(Number_Obs > 10)
+```
+
+
+```{r butterfly data spatial management}
+gb_sf <- st_read("~/Data/Shapefiles/GBR_adm/GBR_adm1.shp", quiet = TRUE) %>%
+  filter(NAME_1 %in% c("England","Wales","Scotland"))
+
+ukbms_gatekeeper_locs <- filter(ukbms_gatekeeper,
+                                Survey_type == "UKBMS") %>%
+  select(SITE_CODE, Easting, Northing) %>%
+  distinct() %>%
+  st_as_sf(coords = c("Easting","Northing"), crs = 27700)
+
+# WCBS not included in this data collection.
+
+ukbms_gatekeeper_locs_gb <- st_join(st_transform(ukbms_gatekeeper_locs, 4326),
+                                    select(gb_sf, ISO, NAME_1)) %>%
+  filter(!is.na(NAME_1))
+
+bto_locs <- bto_gatekeeper %>%
+  select(OSGR10K) %>% distinct() %>%
+  mutate(Easting = 1000*floor(rnrfa::osg_parse(OSGR10K)$easting/1000) + 5000,
+         Northing = 1000*floor(rnrfa::osg_parse(OSGR10K)$northing/1000) + 5000)
+bto_locs_sf <- bto_locs %>% 
+  select(OSGR10K, Easting, Northing) %>%
+  distinct() %>%
+  st_as_sf(coords = c("Easting","Northing"), crs = 27700)
+bto_gatekeeper <- left_join(bto_gatekeeper, bto_locs) 
+
+```
+
+```{r inla mesh creation}
+# first convert basin to points (with only a few points, simplifying to nearest 100m)
+gb_bnd_pts <- gb_sf %>%
+  st_union() %>%
+  st_simplify(dTolerance = 5000) %>%
+  st_cast("POINT") %>%
+  st_transform(crs=27700) %>%
+  st_coordinates()
+gb_concave <- concaveman::concaveman(gb_bnd_pts)
+gb_poly <- Orcs::coords2Polygons(gb_concave, ID = "GB")
+mesh_brr <- inla.sp2segment(gb_poly)
+mesh <- inla.mesh.2d(boundary = mesh_brr, max.edge = c(50000,300000))
+```
+
+
+```{r combine all data}
+all_data <-  select(ukbms_gatekeeper, SITE_CODE,
+                    Year = YEAR, Response = Gatekeeper_Abundance,
+                    Easting, Northing, Length, Survey = Survey_type) %>%
+  filter(SITE_CODE %in% ukbms_gatekeeper_locs_gb$SITE_CODE) %>%
+  mutate(SITE_CODE = as.character(SITE_CODE)) %>%
+  full_join(select(bto_gatekeeper, SITE_CODE = OSGR10K, Easting, Northing,
+                   Response = Gatekeeper, Number_Obs, List_Length, Year) %>%
+              mutate(Survey = "BTO")) %>%
+  mutate(YRnm = Year - 2004,
+         Number_Obs = Number_Obs/30,
+         List_Length = List_Length/10,
+         Length = Length/2000) %>%
+  filter(!is.na(Survey) & Year > 2004 & Year < 2015)
+```
+
+```{r set up matern kernel}
+# Assign kernel
+# probability that rho < 100km (2x max edge) is 0.01
+# probability that sigma > 5 is 0.01
+spde <- inla.spde2.pcmatern(mesh, prior.range = c(100000, 0.01),
+                            prior.sigma = c(5, 0.01))
+ngrp <- max(all_data$YRnm)
+ar1_hyper <- list(theta1 = list(prior = "pc.prec", param = c(0.25, 0.01)),
+                  rho = list(prior = "pc.cor1", param = c(0.8, 0.8)))
+```
+
+```{r UKBMS only model}
+#make A matrix for structured data 
+UKBMS_datasites <- filter(all_data, Survey == "UKBMS") 
+UKBMS_data_A <- inla.spde.make.A(mesh = mesh, 
+                                 loc = as.matrix(UKBMS_datasites[,c("Easting","Northing")]),
+                                 group = UKBMS_datasites$YRnm)
+
+# data stack
+UKBMS_s_index <- inla.spde.make.index(name = "ukbms.field",
+                                      n.spde = spde$n.spde,
+                                      n.group = ngrp)
+UKBMS_env <- data.frame(Year = UKBMS_datasites$Year,
+                        TransLength = UKBMS_datasites$Length/1000)
+stk_UKBMS_data <- inla.stack(data = list(Gatekeeper = UKBMS_datasites$Response),
+                             A = list(UKBMS_data_A, 1),
+                             effects = list(c(UKBMS_s_index,list(InterceptUKBMS=1)), 
+                                            list(UKBMS_env)), 
+                             tag = "UKBMS_data")
+
+# Model specification
+formulaUKBMS <- Gatekeeper ~  -1 + InterceptUKBMS + TransLength + 
+  f(ukbms.field, model = spde, group = ukbms.field.group, 
+    control.group = list(model = "ar1", hyper = ar1_hyper))
+
+
+# resultUKBMS <- inla(formulaUKBMS, family = "nbinomial",
+#                     data = inla.stack.data(stk_UKBMS_data),
+#                     control.predictor = list(A = inla.stack.A(stk_UKBMS_data),
+#                                              compute=TRUE),
+#                     control.fixed = list(prec = 1),
+#                     control.compute = list(cpo=TRUE, waic = TRUE, dic = TRUE)
+# )
+resultUKBMS <- readRDS("Outputs/resultUKBMS_rho80.rds")
+# summary(resultUKBMS)
+
+```
+
+```{r BTO only model}
+#make A matrix for structured data 
+BTO_datasites <- filter(all_data, Survey == "BTO") 
+ngrp <- max(BTO_datasites$YRnm)
+BTO_data_A <- inla.spde.make.A(mesh = mesh, 
+                               loc = as.matrix(BTO_datasites[,c("Easting","Northing")]),
+                               group = BTO_datasites$YRnm)
+
+# data stack
+BTO_s_index <- inla.spde.make.index(name = "BTO.field",
+                                    n.spde = spde$n.spde,
+                                    n.group = ngrp)
+BTO_env <- data.frame(Year = BTO_datasites$Year,
+                      Number_Obs = BTO_datasites$Number_Obs,
+                      List_Length = BTO_datasites$List_Length)
+stk_BTO_data <- inla.stack(data = list(Gatekeeper = BTO_datasites$Response),
+                           A = list(BTO_data_A, 1),
+                           effects = list(c(BTO_s_index,list(InterceptBTO=1)), 
+                                          list(BTO_env)), 
+                           tag = "BTO_data")
+
+# Model specification
+formulaBTO <- Gatekeeper ~  -1 + InterceptBTO + List_Length + 
+  f(BTO.field, model = spde, group = BTO.field.group, 
+    control.group = list(model = "ar1", hyper = ar1_hyper))
+
+
+# resultBTO <- inla(formulaBTO, family = "nbinomial",
+#                   data = inla.stack.data(stk_BTO_data),
+#                   control.predictor = list(A = inla.stack.A(stk_BTO_data),
+#                                            compute=TRUE),
+#                   control.fixed = list(prec = 1),
+#                   control.compute = list(cpo=TRUE, waic = TRUE, dic = TRUE)
+# )
+# saveRDS(resultBTO, "Outputs/resultBTO_rho80.rds")
+resultBTO <- readRDS("Outputs/resultBTO_rho80.rds")
+# summary(resultBTO)
+
+```
+
+```{r shared sptemp only}
+stk <- inla.stack(stk_UKBMS_data, stk_BTO_data)
+# for some reason the inla.stack.data isn't returning the data in the right format,
+# so hacking it to make it work (needs to be a 2 column matrix, one for each
+# dataset):
+stk2 <- inla.stack.data(stk)
+Gatekeeper <- matrix(NA, ncol = 2, nrow = stk$data$nrow)
+Gatekeeper[stk$data$index$UKBMS_data,1] <- stk$data$data$Gatekeeper[stk$data$index$UKBMS_data]
+Gatekeeper[stk$data$index$BTO_data,2] <- stk$data$data$Gatekeeper[stk$data$index$BTO_data]
+stk2$Gatekeeper <- Gatekeeper
+
+formulaJ <- Gatekeeper ~  -1 + InterceptUKBMS + InterceptBTO + TransLength + 
+  List_Length + 
+  f(ukbms.field, model = spde, group = ukbms.field.group, 
+    control.group = list(model = "ar1", hyper = ar1_hyper)) + 
+  f(BTO.field, copy = "ukbms.field", fixed = TRUE, group = BTO.field.group, 
+    control.group = list(model = "ar1", hyper = ar1_hyper))
+
+
+# resultj <- inla(formulaJ,family=c("nbinomial", "nbinomial"),
+#                data=stk2,
+#                control.predictor=list(A=inla.stack.A(stk), compute=TRUE),
+#                control.fixed = list(prec = 1),
+#                control.compute = list(cpo=TRUE, waic = TRUE, dic = TRUE)
+# )
+# saveRDS(resultj, "Outputs/result_joint_rho80.rds")
+resultj <- readRDS("Outputs/result_joint_rho80.rds")
+# summary(resultj)
+```
+
+The BTO-specific, UKBMS-specific and integrated joint model all showed similar broad-scale spatial patterns of predicted Gatekeeper abundance, with potentially some evidence of sharper transitions from area to area within the UKBMS model which is based on more clustered data (Figure \@ref(fig:spde-2005), S3-5). As the overall scales of the two datasets are different, due to UKBMS being an abundance index while BTO being a count of presence-only observations, the greater range within the UKBMS predictions was expected, with UKBMS having both a wider range of mean predictions across space and time and also a higher interquartile range. The interquartile range is calculated based upon the fitted spatial field for the given time point and presented as a metric of model certainty due to its robustness to the distribution of the variable measured. Despite the datasets reflecting slightly different aspects of the butterfly population the joint model did prove able to fit a spatio-temporal field that was roughly intermediate between the two data sources, and with a smaller interquartile range than the other two datasets. The interquartile range and standard deviation of the spatio-temporal field was higher within the UKBMS model than the BTO and joint model, with limited variation across the years (Figure \@ref(fig:spde-2005), S6). The two dataset specific models show differing spatial covariance parameters, with the UKBMS model having a range of `r round(resultUKBMS$summary.hyperpar[2,1]/1000)` km (± `r round(resultUKBMS$summary.hyperpar[2,2]/1000)`), and the BTO model having a much higher range of `r round(resultBTO$summary.hyperpar[2,1]/1000)` km (± `r round(resultBTO$summary.hyperpar[2,2]/1000)`). The joint model shows a range closer to the UKBMS model range of `r round(resultj$summary.hyperpar[3,1]/1000)` km (± `r round(resultj$summary.hyperpar[3,2]/1000)`). The marginal standard deviation for the Matérn covariance function was larger for UKBMS, at `r round(resultUKBMS$summary.hyperpar[3,1], 3)` (± `r round(resultUKBMS$summary.hyperpar[3,2], 3)`) compared to the BTO only model having `r round(resultBTO$summary.hyperpar[3,1], 3)` (± `r round(resultBTO$summary.hyperpar[3,2], 3)`) and the joint model having `r round(resultj$summary.hyperpar[4,1], 3)` (± `r round(resultj$summary.hyperpar[4,2], 3)`). The level of temporal autocorrelation was consistently high in all models, with the UKBMS model being `r round(resultUKBMS$summary.hyperpar[4,1], 3)` (± `r round(resultUKBMS$summary.hyperpar[4,2], 3)`), the BTO only model having `r round(resultBTO$summary.hyperpar[4,1], 3)` (± `r round(resultBTO$summary.hyperpar[4,2], 3)`) and the joint model having `r round(resultj$summary.hyperpar[5,1], 3)` (± `r round(resultj$summary.hyperpar[5,2], 3)`). This corresponds to very limited change per year overall across the broad spatial field used within the model, as the total spatial field incorporates large areas of no change (e.g. the buffer zone over the waters around Great Britain) and even those areas within England which show some change mostly show less than one unit of change (log-scale) across the ten-year period (Figure \@ref(fig:spde-difference)).
+
+The survey effort parameters were associated with increased Gatekeeper numbers, however the effect of transect length upon abundance within UKBMS was weaker and the 95% quantile crossed zero in both the UKBMS only model (`r round(resultUKBMS$summary.fixed[2,1], 3)` ± `r round(resultUKBMS$summary.fixed[2,2], 3)`) and the joint model (`r round(resultj$summary.fixed[3,1], 3)` ± `r round(resultj$summary.fixed[3,2], 3)`). The estimate for the effect of list length upon BTO gatekeeper abundance was consistently positive (BTO only model: `r round(resultBTO$summary.fixed[2,1], 3)` ± `r round(resultBTO$summary.fixed[2,2], 3)`, joint model: `r round(resultj$summary.fixed[4,1], 3)` ± `r round(resultj$summary.fixed[4,2], 3)`). The UKBMS intercept was predicted to be higher than the BTO intercept within the joint model (`r round(resultj$summary.fixed[1,1], 3)` ± `r round(resultj$summary.fixed[1,2], 3)` compared to `r round(resultj$summary.fixed[2,1], 3)` ± `r round(resultj$summary.fixed[2,2], 3)`). The UKBMS data had a lower 1/overdispersion than the BTO data, `r round(resultj$summary.hyperpar[1,1], 3)` ± `r round(resultj$summary.hyperpar[1,2], 3)` compared to `r round(resultj$summary.hyperpar[2,1], 3)` ± `r round(resultj$summary.hyperpar[2,2], 3)`.
+
+
+```{r set up inla mesh projector for plotting}
+gb_sf2 <- st_transform(gb_sf, crs = 27700)
+gb_pts <- data.frame(X = rep(seq(60000,655000,5000),196),
+                     Y = rep(seq(5000,980000,5000), each = 120)) %>%
+  st_as_sf(crs = 27700, coords = c("X","Y"), remove = FALSE) %>%
+  st_join(gb_sf2, left = FALSE)
+# Extract mean spatial random field - 5km resolution?
+nmesh <- mesh$n
+proj2 <- inla.mesh.projector(mesh, loc = as_Spatial(gb_pts))
+```
+
+```{r spde-2005, fig.dim = c(7.9,8.6), fig.cap = 'Predicted mean spatial field (top) and interquartile range (bottom) for Gatekeeper abundance for all models in 2005. Mean and IQR are calculated on the log scale, and with mean values lower than -6 shown as -6 and IQR values greater than 7.5 shown as 7.5.'}
+
+i <- 1
+j <- i*nmesh - nmesh + 1
+xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$mean[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+bto_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(-6,8), oob = scales::oob_squish, 
+                       option = "plasma", name = "mean") +
+  ggtitle(paste("BTO mean:",i+2004)) +
+  coord_equal()
+
+xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+ukbms_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(-6,8), oob = scales::oob_squish, 
+                       option = "plasma", name = "mean") +
+  ggtitle(paste("UKBMS mean:",i+2004)) +
+  coord_equal()
+
+xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+joint_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value),
+            colour = NA) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(-6,8), oob = scales::oob_squish, 
+                       option = "plasma", name = "mean") +
+  ggtitle(paste("Joint mean:",i+2004)) +
+  coord_equal()
+
+p1 <- bto_plot + ukbms_plot + joint_plot + plot_layout(guides = "collect")
+
+# IQR
+i <- 1
+j <- i*nmesh - nmesh + 1
+bto_quantiles <- sapply(resultBTO$marginals.random$BTO.field[j:(j+nmesh-1)],
+                        function(x){
+                          inla.qmarginal(c(0.25,0.75), x)
+})
+bto_iqr <- bto_quantiles[2,] - bto_quantiles[1,]
+xmeantemp <- inla.mesh.project(proj2, bto_iqr) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+bto_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,7.5), oob = scales::oob_squish,
+                       option = "magma", name = "IQR") +
+  ggtitle(paste("BTO IQR:",i+2004)) +
+  coord_equal()
+
+ukbms_quantiles <- sapply(resultUKBMS$marginals.random$ukbms.field[j:(j+nmesh-1)], 
+                          function(x){
+                            inla.qmarginal(c(0.25,0.75), x)
+ })
+ukbms_iqr <- ukbms_quantiles[2,] - ukbms_quantiles[1,]
+xmeantemp <- inla.mesh.project(proj2, ukbms_iqr) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+ukbms_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,7.5), oob = scales::oob_squish,
+                       option = "magma", name = "IQR") +
+  ggtitle(paste("UKBMS IQR:",i+2004)) +
+  coord_equal()
+
+j_quantiles <- sapply(resultj$marginals.random$ukbms.field[j:(j+nmesh-1)], 
+                      function(x){
+                        inla.qmarginal(c(0.25,0.75), x)
+})
+j_iqr <- j_quantiles[2,] - j_quantiles[1,]
+xmeantemp <- inla.mesh.project(proj2, j_iqr) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+joint_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value),
+            colour = NA) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,7.5), oob = scales::oob_squish, 
+                       option = "magma", name = "IQR") +
+  ggtitle(paste("Joint IQR:",i+2004)) +
+  coord_equal()
+
+p2 <- bto_plot + ukbms_plot + joint_plot + plot_layout(guides ="collect")
+p1/p2
+```
+
+Despite the similarly high levels of temporal autocorrelation predicted by the model, it can be seen that the two different datasets show very different patterns of change across GB. The UKBMS model shows a large increase in Northern England while BTO shows a much smaller increase across all regions other than the South West and Southern Wales, with the joint model showing an intermediate pattern (Figure \@ref(fig:spde-difference)). The pattern of change for each model varies year on year, reflecting the flexibility of the model to fit the changes present in the data (Figures S7-9). The increase in Northern England in UKBMS is largely driven by a cluster of sites in southern Cumbria that show increased abundance over the whole ten-year period (Figure S1). It should be noted that these changes are all plotted on the log scale, and the increase in North-Western England and Southern Scotland in UKBMS is both highly uncertain and represents an ecologically unnoticeable increase in predicted abundance due to both the start and endpoints corresponding to less than 0.01 on the response scale (Figure \@ref(fig:spde-2005)). Plotting these changes on the log scale allows us to see the way in which the joint model tries to fit the two highly disparate data sources by taking an intermediate route between the two.
+
+```{r spde-difference, fig.dim=c(7.9,8.6), fig.cap='Total change from 2005 to 2014 on the log scale according to the model for BTO (left), UKBMS (centre) and the integrated model (right), with both the mean estimated change (top) and the interquartile range of the estimated change (bottom). For ease of interpretation absolute values of the mean change greater than 2 are shown as 2 and IQR values greater than 6 are shown as 6.'}
+# Plot change in spatial field from 2005 to 2014
+i <- 10
+i1 <- 1
+j1 <- i1*nmesh - nmesh + 1
+old_spfld <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$mean[j1:(j1 + nmesh - 1)]) %>%
+  as.data.frame()
+colnames(old_spfld) <- "init_value"
+old_spfld <- old_spfld %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(init_value))
+
+j <- i*nmesh - nmesh + 1
+xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$mean[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value)) %>%
+  left_join(old_spfld, by = c("X","Y")) %>%
+  mutate(diff = value - init_value)
+
+bto_plot <- ggplot(xmeantemp) +
+  geom_raster(data = xmeantemp, aes(x = X, y = Y, fill = diff)) +
+  scale_fill_distiller(palette = "BrBG", limits = c(-2,2), 
+                       oob = scales::squish,
+                       name = "Change") +
+  theme_void() +
+  coord_fixed() +
+  ggtitle("BTO: mean change")
+
+old_spfld <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$mean[j1:(j1 + nmesh - 1)]) %>%
+  as.data.frame()
+colnames(old_spfld) <- "init_value"
+old_spfld <- old_spfld %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(init_value))
+
+j <- i*nmesh - nmesh + 1
+xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value)) %>%
+  left_join(old_spfld, by = c("X","Y")) %>%
+  mutate(diff = value - init_value)
+
+ukbms_plot <- ggplot(xmeantemp) +
+  geom_raster(data = xmeantemp, aes(x = X, y = Y, fill = diff)) +
+  scale_fill_distiller(palette = "BrBG", limits = c(-2,2), 
+                       oob = scales::squish,
+                       name = "Change") +
+  theme_void() +
+  coord_fixed() +
+  ggtitle("UKBMS: mean change")
+
+old_spfld <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$mean[j1:(j1 + nmesh - 1)]) %>%
+  as.data.frame()
+colnames(old_spfld) <- "init_value"
+old_spfld <- old_spfld %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(init_value))
+
+j <- i*nmesh - nmesh + 1
+xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value)) %>%
+  left_join(old_spfld, by = c("X","Y")) %>%
+  mutate(diff = value - init_value)
+
+joint_plot <- ggplot(xmeantemp) +
+  geom_raster(data = xmeantemp, aes(x = X, y = Y, fill = diff)) +
+  scale_fill_distiller(palette = "BrBG", limits = c(-2,2), 
+                       oob = scales::squish,
+                       name = "Change") +
+  theme_void() +
+  coord_fixed() +
+  ggtitle("Joint model: mean change")
+
+p1 <- bto_plot + ukbms_plot + joint_plot + plot_layout(guides = "collect")
+
+# IQR
+i <- 1
+j <- i*nmesh - nmesh + 1
+bto_draws1 <- sapply(resultBTO$marginals.random$BTO.field[j:(j+nmesh-1)],
+                     function(x){
+                       inla.rmarginal(1000, x)
+                     })
+i2 <- 10
+j2 <- i2*nmesh - nmesh + 1
+bto_draws2 <- sapply(resultBTO$marginals.random$BTO.field[j:(j+nmesh-1)],
+                     function(x){
+                       inla.rmarginal(1000, x)
+                     })
+bto_change <- bto_draws2 - bto_draws1
+bto_iqr <- apply(bto_change, 2, quantile, 0.75) - 
+  apply(bto_change, 2, quantile, 0.25)
+xmeantemp <- inla.mesh.project(proj2, bto_iqr) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+bto_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,6), oob = scales::oob_squish,
+                       option = "magma", name = "IQR") +
+  ggtitle("BTO: IQR of change") +
+  coord_equal()
+
+i <- 1
+j <- i*nmesh - nmesh + 1
+ukbms_draws1 <- sapply(resultUKBMS$marginals.random$ukbms.field[j:(j+nmesh-1)],
+                     function(x){
+                       inla.rmarginal(1000, x)
+                     })
+i2 <- 10
+j2 <- i2*nmesh - nmesh + 1
+ukbms_draws2 <- sapply(resultUKBMS$marginals.random$ukbms.field[j:(j+nmesh-1)],
+                     function(x){
+                       inla.rmarginal(1000, x)
+                     })
+ukbms_change <- ukbms_draws2 - ukbms_draws1
+ukbms_iqr <- apply(ukbms_change, 2, quantile, 0.75) - 
+  apply(ukbms_change, 2, quantile, 0.25)
+xmeantemp <- inla.mesh.project(proj2, ukbms_iqr) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+ukbms_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,6), oob = scales::oob_squish,
+                       option = "magma", name = "IQR") +
+  ggtitle("UKBMS: IQR of change") +
+  coord_equal()
+
+i <- 1
+j <- i*nmesh - nmesh + 1
+joint_draws1 <- sapply(resultj$marginals.random$ukbms.field[j:(j+nmesh-1)],
+                     function(x){
+                       inla.rmarginal(1000, x)
+                     })
+i2 <- 10
+j2 <- i2*nmesh - nmesh + 1
+joint_draws2 <- sapply(resultj$marginals.random$ukbms.field[j:(j+nmesh-1)],
+                     function(x){
+                       inla.rmarginal(1000, x)
+                     })
+joint_change <- joint_draws2 - joint_draws1
+joint_iqr <- apply(joint_change, 2, quantile, 0.75) - 
+  apply(joint_change, 2, quantile, 0.25)
+xmeantemp <- inla.mesh.project(proj2, joint_iqr) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+joint_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,6), oob = scales::oob_squish,
+                       option = "magma", name = "IQR") +
+  ggtitle("Joint model: IQR of change") +
+  coord_equal()
+
+p2 <- bto_plot + ukbms_plot + joint_plot + plot_layout(guides ="collect")
+p1/p2
+```
+
+
+## Areal data – Caddisfly abundance
+
+
+```{r read in river shapefile and find connections, warning = FALSE}
+# new river structure file
+river_struct <- st_read("Outputs/River_data/DigitalRiver.shp", quiet = TRUE)
+
+# get starting points of each linestring
+start_point <- st_cast(river_struct, "POINT") %>%
+  group_by(OBJECTID) %>%
+  filter(row_number() == 1L) %>%
+  mutate(START_OBJECTID = OBJECTID)
+
+# get intersections of starting points and linestrings
+intersect_list <- st_intersects(start_point, river_struct)
+
+connections <- lapply(1:length(intersect_list), function(i){
+  start_objectid <- start_point$START_OBJECTID[i]
+  end_objectids <- start_point$START_OBJECTID[intersect_list[[i]]]
+  
+  dat <- data.frame(start_objectid, end_objectids)
+})
+connection_df <- do.call(rbind, connections) %>%
+  filter(start_objectid != end_objectids)
+```
+
+
+```{r convert river to network and cluster}
+river_graph <- graph_from_edgelist(as.matrix(mutate(connection_df, 
+                                                    across(.cols = everything(),
+                                                           .fns = as.character))))
+
+# find connected components of river_graph and limit to largest
+gr_comp <- components(river_graph)
+
+large_comp <- names(gr_comp$membership[gr_comp$membership==20])
+
+thames_river <- filter(river_struct, OBJECTID %in% large_comp)
+
+thames_network <- subgraph(river_graph, vids = large_comp)
+
+
+riv_lengths <- st_length(thames_river)
+names(riv_lengths) <- thames_river$OBJECTID
+riv_lengths <- riv_lengths[vertex_attr(thames_network, "name")]
+vertex_attr(thames_network, "length") <- riv_lengths
+
+
+# test different clustering methods
+clusters <- cluster_fast_greedy(as.undirected(thames_network, 
+                                              mode =  "collapse"))
+riv_mem <- data.frame(Cluster = as.character(clusters$membership),
+                      OBJECTID = clusters$names)
+
+thames_river <- filter(river_struct, OBJECTID %in% large_comp) %>%
+  mutate(OBJECTID = as.character(OBJECTID)) %>%
+  inner_join(riv_mem)
+
+comm_el <- crossing(clusters, thames_network)
+comm_df <- data.frame(Edge = names(comm_el),
+                      Cross = comm_el) %>%
+  separate(Edge, c("Node1","Node2"), sep = "\\|", remove = FALSE) %>%
+  left_join(rename(riv_mem, Node1 = OBJECTID, Node1Cl = Cluster)) %>%
+  left_join(rename(riv_mem, Node2 = OBJECTID, Node2Cl = Cluster)) %>%
+  filter(Cross == "TRUE")
+
+cluster_adjacency <- comm_df[,c("Node1Cl","Node2Cl")] %>%
+  as.matrix() %>%
+  graph_from_edgelist() %>%
+  as.undirected() %>%
+  as_adjacency_matrix()
+```
+
+
+```{r read in EA and CS data}
+
+# read in EA data
+EA_data <- read.csv("Data/RivFly_EAstruct_withNP.csv")
+
+# read in CitSci data
+CS_data <- read.csv("Data/RivFly_citsci_withNP.csv") %>%
+  filter(!grepl("Shaw House",Site))
+
+# Combine EA and CitSci data
+pts_data <- rbind(select(EA_data, X = FULL_EASTING, Y = FULL_NORTHING,
+                         Date = DATE_OF_ANALYSIS, Site = SITE_ID,
+                         Year, Caddisfly = CADDISFLY, Stoneflies = STONEFLY,
+                         Baetidae = BAETIDAE, Gammaridae = GAMMARIDAE,
+                         nitrate, phosphate) %>%
+                    mutate(Source = "EA"),
+                  select(CS_data, X = Easting, Y = Northing, 
+                         Date, Site, Year, Caddisfly, Stoneflies,
+                         Baetidae, Gammaridae, nitrate, phosphate) %>%
+                    mutate(Source = "CS"))
+
+# Combined data
+pts_coords <- select(pts_data, Source, X, Y) %>% unique() %>%
+  mutate(SITE_ID = paste(Source,1:n(),sep="_"))
+pts_datasites <- full_join(pts_coords,pts_data, multiple = "all") %>%
+  unique() %>%
+  mutate(Date = dmy(Date)) %>%
+  mutate(Month = month(Date),
+         Day = ifelse(leap_year(Date) & yday(Date) > 59, 
+                      yday(Date)-1,yday(Date))) %>%
+  arrange(SITE_ID, Date)
+
+
+```
+
+
+```{r Match points to river network}
+pts_sf <- st_as_sf(pts_coords, coords = c("X","Y"), crs = 27700) %>%
+  mutate(Cluster = 
+           as.data.frame(thames_river)[st_nearest_feature(., thames_river),
+                                       "Cluster"])
+test <- st_distance(pts_sf, thames_river, tolerance = 10)
+far_sites <- pts_sf$SITE_ID[apply(test,1,min)>500]
+
+pts_sf_thames <- filter(pts_sf, !(SITE_ID %in% far_sites))
+
+clus_counts <- pts_sf_thames %>%
+  as.data.frame() %>%
+  count(Source, Cluster) %>%
+  pivot_wider(names_from = Source, values_from = n, values_fill = 0) 
+# write.csv(clus_counts, "Outputs/cluster_counts_thamesareas.csv", row.names = FALSE)
+```
+
+```{r}
+# Set up adjacency matrix
+thames.adj <- cluster_adjacency
+
+# Aggregate data by cluster, source, year and month
+pts_aggregated <- pts_datasites %>%
+  filter(Year > 2014 & Year < 2020) %>%
+  left_join(select(as.data.frame(pts_sf), SITE_ID, Cluster),
+            by = "SITE_ID") %>%
+  mutate(Cluster = forcats::fct_expand(as.factor(Cluster), rownames(thames.adj))) %>%
+  complete(Cluster, Year) %>%
+  mutate(ID.Area = as.numeric(Cluster),
+         ID.Year = Year - 2014) %>%
+  mutate(ID.Area.CS = ifelse(Source == "CS", ID.Area, NA))
+
+# Make sure match to thames.adj is okay:
+pts_clus_idarea <- select(pts_aggregated, Cluster, ID.Area) %>%
+  distinct() %>%
+  arrange(ID.Area)
+thames.adj <- thames.adj[as.character(pts_clus_idarea$Cluster),
+                         as.character(pts_clus_idarea$Cluster)]
+```
+
+```{r set up EA data}
+EA_datasites <- filter(pts_aggregated, Source == "EA")
+
+# data stack
+EA_env <- select(EA_datasites, Caddisfly, Year, Month,
+                 ID.Area, ID.Year) %>%
+  mutate(InterceptEA = 1)
+```
+
+```{r spatiotemp interaction ea only pc prior, warning = FALSE}
+seas_hyper <- list(theta = list(prior = "pc.prec", param = c(0.75, 0.01)))
+bym_hyper <- list(theta1 = list(prior = "pc.prec", param = c(0.5, 0.01)),
+                  theta2 = list(prior = "pc", param = c(0.5, 0.5)))
+ar1_hyper <- list(theta1 = list(prior = "pc.prec", param = c(0.25, 0.01)),
+                  rho = list(prior = "pc.cor1", param = c(0.9, 0.9)))
+
+ea.formula <- Caddisfly ~ -1 + InterceptEA + 
+  f(Month, model = "seasonal", season.length = 12, hyper = seas_hyper) +
+  f(ID.Area, model = "bym2", graph = thames.adj, group = ID.Year, hyper = bym_hyper,
+    control.group = list(model = "ar1", hyper = ar1_hyper))
+
+# ea.mod <- inla(ea.formula, family = "nbinomial", data = EA_env, 
+#                control.predictor = list(compute = TRUE), 
+#                control.compute = list(dic = TRUE, cpo = TRUE))
+# saveRDS(ea.mod, "Outputs/ea_mod_areal_310123.rds")
+ea.mod <- readRDS("Outputs/ea_mod_areal_310123.rds")
+```
+
+```{r prep data for joint model}
+# data stack
+All_env <- pts_aggregated %>%
+  mutate(ID.Source = recode(Source, "CS" = 1, "EA" = 2),
+         InterceptCS = ifelse(Source == "CS",1,NA),
+         InterceptEA = ifelse(Source == "EA",1,NA)) %>%
+  select(Year, Month, InterceptCS, InterceptEA,
+         ID.Area, ID.Year, ID.Area.CS, ID.Source) %>%
+  as.list()
+
+All_env$Caddisfly <- pts_aggregated %>%
+  mutate(EA = ifelse(Source == "EA", Caddisfly, NA),
+         CS = ifelse(Source == "CS", Caddisfly, NA)) %>%
+  select(EA,CS) %>% as.matrix()
+
+
+
+```
+
+
+```{r joint model CS IID sptemp interaction PC prior}
+j.formula <- Caddisfly ~ -1 + InterceptEA + InterceptCS +
+  f(Month, model = "seasonal", season.length = 12, hyper = seas_hyper) +
+  f(ID.Area.CS, model = "iid", 
+    hyper = list(theta = list(prior = "pc.prec", param = c(0.5,0.01)))) +
+  f(ID.Area, model = "bym2", graph = thames.adj, group = ID.Year, hyper = bym_hyper,
+    control.group = list(model = "ar1", hyper = ar1_hyper))
+
+
+# j.mod <- inla(j.formula, family = c("nbinomial","nbinomial"), 
+#               data = All_env,
+#               control.predictor = list(compute = TRUE), 
+#               control.compute = list(dic = TRUE, cpo = TRUE))
+# saveRDS(j.mod, "Outputs/jmod_areal_310123.rds")
+j.mod <- readRDS("Outputs/jmod_areal_310123.rds")
+```
+
+The spatial spread of the ARMI caddisfly data was too limited to fit a citizen science only model (Figure S10), so here we compare only the EA-only model and the joint model. The spatial pattern of caddisfly abundance was predicted to be similar between the two models (Figure S11). The difference between the models is seen in how much change from year to year occurs with the joint model showing higher levels of change, although the direction, strength, and duration of the changes vary by river section (Figure \@ref(fig:area-change)). This is reflected by the lower temporal autocorrelation parameter within the joint model compared to the EA only model, with it being estimated as `r round(j.mod$summary.hyperpar[7,1], 3)`  ± `r round(j.mod$summary.hyperpar[7,2], 3)` within the joint model compared to `r round(ea.mod$summary.hyperpar[5,1], 3)`  ± `r round(ea.mod$summary.hyperpar[5,2], 3)` in the EA only model. The proportion of the variance explained by the spatial effect within the BYM model is low in both models indicating little linkage between river sections at this scale, and this was somewhat lower in the joint model (`r round(j.mod$summary.hyperpar[6,1], 3)`  ± `r round(j.mod$summary.hyperpar[6,2], 3)`) compared to the EA only model (`r round(ea.mod$summary.hyperpar[4,1], 3)`  ± `r round(ea.mod$summary.hyperpar[4,2], 3)`). The standard deviation of the spatially structured effect was also higher within the joint model than the EA only model, while the deviation of the area specific effect was similar across models (Figure S12). This similarity between models is likely due to the ARMI specific spatial field containing any differences in areas within the ARMI data compared to the EA data (Figure S13). The EA survey generally had higher caddisfly counts than the ARMI survey (EA intercept in joint model: `r round(j.mod$summary.fixed[1,1], 3)`  ± `r round(j.mod$summary.fixed[1,2], 3)`, ARMI intercept in joint model: `r round(j.mod$summary.fixed[2,1], 3)`  ± `r round(j.mod$summary.fixed[2,2], 3)`). Note that these results are given on the log scale, and correspond to mean counts of ~`r round(exp(j.mod$summary.fixed[1,1]))` and ~`r round(exp(j.mod$summary.fixed[2,1]))` respectively. However, both surveys showed similar levels of overdispersion (1/overdispersion, EA: `r round(j.mod$summary.hyperpar[1,1], 3)`  ± `r round(j.mod$summary.hyperpar[1,2], 3)`, ARMI: `r round(j.mod$summary.hyperpar[2,1], 3)`  ± `r round(j.mod$summary.hyperpar[2,2], 3)`). The precision for the seasonal effect was lower in the joint model (`r signif(j.mod$summary.hyperpar[3,1], 3)`  ± `r signif(j.mod$summary.hyperpar[3,2], 3)`) than in the EA only model (`r signif(ea.mod$summary.hyperpar[2,1], 3)`  ± `r signif(ea.mod$summary.hyperpar[2,2], 3)`), and examining the predicted effect of each season in the two models shows that the joint model gives a much more biologically realistic result (Figure \@ref(fig:area-season)).
+
+```{r area-change, fig.width = 9.8, fig.height = 3.9, fig.cap='Change from year to year in the EA only model (a) and the joint model (b)'}
+N_Area <- 137
+N_Year <- 5
+sptemp_change_plot <- function(mod){
+  mod_pred <- mod$summary.random$ID.Area %>%
+    mutate(ID.Area = rep(seq_len(N_Area),2*N_Year),
+           ID.Year = rep(seq_len(N_Year), each=2*N_Area) + 2014) %>%
+    group_by(ID.Area, ID.Year) %>%
+    summarise(mean = sum(mean), .groups = "drop") %>%
+    mutate(Cluster = as.character(ID.Area))
+  
+  plot_list <- lapply(2:N_Year, function(i){
+    i1 <- i + 2013
+    i2 <- i + 2014 
+    old_area <- filter(mod_pred, ID.Year == i1) %>%
+      select(old_mean = mean, ID.Area)
+    new_area <- filter(mod_pred, ID.Year == i2) %>%
+      select(new_mean = mean, ID.Area)
+    diff <- full_join(old_area, new_area, 
+                      by = c("ID.Area")) %>%
+      mutate(diff = new_mean - old_mean,
+             Year = paste0(i2, "-", i1)) %>%
+      select(ID.Area, diff, Year)
+    
+  })
+  
+  plot_list <- do.call(rbind, plot_list) %>%
+    mutate(Cluster = as.character(ID.Area))
+  
+  thames_river %>% left_join(plot_list,by = "Cluster",
+                             relationship = "many-to-many") %>%
+    ggplot() +
+    geom_sf(aes(colour = diff)) +
+    facet_wrap(~Year, nrow = 1) +
+    theme_void() +
+    scale_colour_distiller(palette = "BrBG", limits = c(-2,2), oob = scales::squish,
+                           name = "Change")
+}
+lapply(list(ea.mod, j.mod), sptemp_change_plot) %>%
+  wrap_plots(ncol = 1, guides = "collect") + plot_annotation(tag_levels = "a")
+```
+
+```{r area-season, fig.dim = c(8,4), fig.cap='Seasonal effect upon caddisfly abundance in the EA only model (a) and the joint model (b)'}
+seas_plot <- function(mod){
+  ggplot(mod$summary.random$Month,
+         aes(x = ID, y = mean)) +
+    geom_line() + 
+    geom_ribbon(aes(ymax = `0.975quant`,ymin = `0.025quant`),
+                alpha = 0.2) +
+    scale_x_continuous(breaks = 1:12, labels = month.abb) +
+    labs(x = "Month", y= "Effect")
+}
+lapply(list(ea.mod, j.mod), seas_plot) %>%
+  wrap_plots() + plot_annotation(tag_levels = "a") & 
+  scale_y_continuous(limits = c(-0.5,0.5))
+```
+
+\newpage
+
+# Discussion
+
+Our results show the potential benefits and difficulties when jointly modelling two (or more) datasets in a spatio-temporal context. We demonstrate that INLA provides a framework to enable spatio-temporal integration of both point and areal data. The caddisfly case study shows how when the citizen science data supplements an aspect of a structured monitoring survey then the joint model can better evaluate the aspect of the data provided in more detail by the citizen science data, in that case the change over time and seasonal trends in caddisfly abundance. This shows the potential gains to be had from integrating together multiple datasets to evaluate change in species occupancy and abundance over time, particularly as modelling change in space over time is more data intensive than modelling a spatial pattern. However, the Gatekeeper butterfly example shows that moving to a spatio-temporal context can reveal or exacerbate differences between data sources. The Gatekeeper butterfly spatial pattern was relatively consistent across the two surveys, however the trends over time were very different with strong evidence of range expansion within the Northwest of England only within the UKBMS data. The joint model still proved able to use information from both datasets to create a map of population change that showed an intermediate pattern between the two datasets, however relating this to the true population change would require further investigation of how the data collection methodologies interact with the ecological dynamics of the Gatekeeper butterfly. Integration of different data sources within this spatio-temporal context requires careful consideration of the bias and representativeness of the data and the model for the question of interest.
+
+Different data sources contain within them different biases and can represent different aspects of a species behaviour due to differing sampling methodologies. Previous work has shown how bias can influence the results of joint models, and approaches for consistent evaluation of bias across studies have been proposed [@Simmonds2020; @Boyd2022]. Different data sources could, for example, sample differing regions in space and/or time which would influence their ability to evaluate change over time. As a function of this, data sources could be sampling different environmental space, with implications for the inferences drawn on the niche space occupied by the species within species modelling based on environmental covariates. Particularly problematic biases could relate to clustering of observations, or when the bias and the pattern of ecological interest confound each other. This was apparent within the Gatekeeper butterfly example, where the northern range edge which we might expect to have changed over time was also where there was less data available and therefore the model estimates were more uncertain. This made evaluating range expansion challenging, particularly as the UKBMS and BTO showed differing results. These different results could be due to the different methodologies of the surveys resulting in different aspects of the butterfly population being captured, i.e. the UKBMS data was a measure of abundance across a transect while the BTO data was constructed through aggregating occurrence data. However, both transect abundance and the number of opportunistic records should be related to the true Gatekeeper abundance. Alternatively, the differences could be due to differing goals of data collectors, with opportunistic observations being taken by BTO volunteers of unusual butterflies so capturing the change in range earlier than we might expect it to be seen in the UKBMS data. The broad scale of the spatial pattern allowed within the model, chosen for computational reasons, also made it difficult to separate out the fine scale clusters of Gatekeeper butterfly populations within the UKBMS data from more broad-scale inference about the change in range edge.
+
+Ecological processes such as those represented by a species distribution in geographic or environmental space are scale dependent [@Levin1992; @Spake2021]. In general the scale chosen within a spatial, or spatio-temporal, model is determined based on the scale of the data available or to ensure computational feasibility. The computational cost of spatio-temporal models is much higher than spatial models, which can result in a coarsening of the scale of the model by necessity. Also, depending on the model structure and implementation certain parts of the model could scale with a power-law with the number of areas (e.g. the PC prior on the BYM model, or fitting a Gaussian Process not using the SPDE approach), indicating a limit to how many areas could be incorporated into the model and it remain computationally feasible. The spatial representation of the region could also represent a simplification of the ecologically-relevant distance, which occurs in the application of Euclidean space models to river data which is why we have modelled caddisfly abundance using an areal approach rather than the SPDE approach. There are alternative approaches to modelling rivers, largely focused on modelling the distance along the river rather than Euclidean distance but these are also currently computationally unfeasible for large numbers of sites and dependent on precise locations being used which does not generalise well to the joint modelling process [@Santos-Fernandez2021]. While computational achievements are always occurring, leading to the ability to fit models to more data than ever before, these constraints on the model fitting process can lead by necessity to mismatch between the scale of the model and the scale of the data and the question that is of interest.
+
+Within this work we have demonstrated a methodology for model-based data integration for spatio-temporally explicit SDMs. The principles of our approach can be generalised to a variety of spatio-temporal model configurations within INLA, enabling a much wider selection of statistical analyses than just the two examples demonstrated within our two case studies. Our work has identified some potential benefits and challenges when applying this method to real ecological data, and identified key considerations when applying this to other contexts. These considerations include the comparability of data set collection methodology, the comparability of the patterns shown by data sets (and drivers of any differences), and the relative sizes of the differing data sets. Some of the considerations can be addressed through building specific model structures that account for them, such as including dataset-specific spatial effects to account for spatial bias or weighting likelihoods to account for different data source sizes [@Fletcher2019]. However, other issues cannot be addressed purely by adjusting the model and as such need to be addressed through other methods such as collecting data from under-sampled regions. Overall, data integration for spatio-temporal modelling of SDMs offers a promising avenue for future research if careful consideration to the biases and limitations of the data sources is given throughout the modelling process.
+
+# Acknowledgements
+
+This work was funded by the Natural Environment Research Council award number NE/R016429/1 as part of the UK-SCAPE programme delivering National Capability, and builds upon work supported through a research partnership agreement between Defra and the UK Centre for Ecology & Hydrology (UKCEH) number 32156.
+
+# Conflict of interest statement
+
+The authors have no conflicts of interest to declare.
+
+# Author contributions
+
+Henrys and Seaton conceived the ideas and designed methodology with input from Jarvis; Seaton analysed the data and led the writing of the manuscript. All authors contributed critically to the drafts and gave final approval for publication.
+
+# Data availability
+
+The UKBMS data is publicly available from the NERC Environmental Information Data Centre © copyright and database right Butterfly Conservation, the Centre for Ecology & Hydrology, British Trust for Ornithology, and the Joint Nature Conservation Committee [@UKBMSIndices; @UKBMSLocs]. The BTO data was provided by the British Trust for Ornithology, accessed through NBN Atlas website (CC-BY-NC), for more information see: https://registry.nbnatlas.org/public/show/dr529 [@BTO2023]. The EA caddisfly data is available online from the water quality data archive © Crown Copyright 2021 (https://environment.data.gov.uk/water-quality/), and the ARMI caddisfly data is available online from the Riverfly Partnership (https://riverflies.fba.org.uk/riverflies-gis-home). Code for fitting these models and producing all figures is available in the supplementary materials.
+
+
+# References

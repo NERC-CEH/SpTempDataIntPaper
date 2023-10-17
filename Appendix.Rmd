@@ -1,0 +1,671 @@
+---
+title: "Spatio-temporal data integration for species distribution modelling in R-INLA: Supplementary figures"
+author:
+ - "Fiona Seaton, Susan Jarvis, Pete Henrys"
+ - "*UK Centre for Ecology & Hydrology, Lancaster, UK*"
+date: "`r format(Sys.time(), '%B %Y')`"
+output: 
+  word_document:
+    reference_docx: "~/Custom Office Templates/pandoc_templ.docx"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, dpi = 300)
+```
+
+```{r libraries}
+library(data.table)
+library(sf)
+library(dplyr) 
+library(tidyr)
+library(igraph)
+library(ggplot2)
+theme_set(theme_classic())
+library(patchwork)
+library(lubridate)
+library(INLA)
+inla.setOption(scale.model.default=FALSE)
+
+```
+
+
+```{r butterfly data read} 
+ukbms_site <- fread("Data/ukbmssitelocationdata2020.csv") %>%
+  rename_with(function(x) gsub(" |\\.","_",x))
+ukbms_indices <- fread("Data/ukbmssiteindices2020.csv") %>%
+  rename_with(function(x) gsub(" |\\.","_",x))
+
+# get full list of sites surveyed in those years. Removing sites that didn't have
+# enough visits for at least one butterfly species (quite restrictive, needs
+# revisiting - have tried removing butterflies with >5000 0s and differing flight
+# periods to gatekeeper)
+ukbms_site_0016 <- ukbms_indices %>% group_by(SITE_CODE, YEAR) %>%
+  # remove common butterflies with lots of -2s and differing flight period from Gatekeeper
+  filter(!COMMON_NAME %in% c("Orange-tip","Peacock","Green-veined White",
+                             "Speckled Wood","Brimstone","Small White",
+                             "Large White","Small Tortoiseshell","Common Blue")) %>%
+  summarise(MIN_INDEX = min(SITE_INDEX), .groups = "drop") %>%
+  filter(MIN_INDEX >= 0) %>%
+  left_join(select(ukbms_site, SITE_CODE = Site_Number, Survey_type,
+                   Gridreference, Easting, Northing, Length, Country), by = "SITE_CODE") %>%
+  filter(Survey_type == "UKBMS") %>%
+  filter(YEAR > 2000 & YEAR < 2018)
+
+# Complete list of sites with 0 observations of gatekeeper in UKBMS, and remove sites
+# with low number of visits (i.e. GAI -2)
+ukbms_gatekeeper <- filter(ukbms_indices, COMMON_NAME == "Gatekeeper" &
+                             YEAR > 2000 & YEAR < 2018) %>%
+  filter(SITE_INDEX >= 0) %>%
+  mutate(Gatekeeper_Abundance = SITE_INDEX,
+         Gatekeeper_Presence = ifelse(SITE_INDEX == 0, 0, 1)) %>%
+  distinct() %>%
+  left_join(select(ukbms_site, SITE_CODE = Site_Number, Survey_type,
+                   Gridreference, Easting, Northing, Length, Country), 
+            by = "SITE_CODE") %>%
+  full_join(ukbms_site_0016) %>% 
+  mutate(Gatekeeper_Abundance = replace_na(Gatekeeper_Abundance, 0),
+         Gatekeeper_Presence = replace_na(Gatekeeper_Presence, 0)) %>%
+  filter(!is.na(Gridreference))
+
+bto_data <- fread("Data/bto-records.csv")
+
+bto_gatekeeper <- bto_data %>%
+  filter(`State/Province` %in% c("England", "Scotland", "Wales")) %>%
+  rename(OSGR10K = `OSGR 10km`, Year = `Start date year`) %>%
+  group_by(OSGR10K, Year) %>%
+  summarise(List_Length = length(unique(`Scientific name`)),
+            Gatekeeper = sum(`Scientific name` == "Pyronia tithonus"),
+            Number_Obs = sum(`Start date month` %in% c(7,8)),
+            .groups = "drop") %>%
+  filter(Number_Obs > 10)
+```
+
+```{r butterfly data spatial management}
+gb_sf <- st_read("~/Data/Shapefiles/GBR_adm/GBR_adm1.shp", quiet = TRUE) %>%
+  filter(NAME_1 %in% c("England","Wales","Scotland"))
+
+ukbms_gatekeeper_locs <- filter(ukbms_gatekeeper,
+                                Survey_type == "UKBMS") %>%
+  select(SITE_CODE, Easting, Northing) %>%
+  distinct() %>%
+  st_as_sf(coords = c("Easting","Northing"), crs = 27700)
+
+# WCBS not included in this data collection.
+
+ukbms_gatekeeper_locs_gb <- st_join(st_transform(ukbms_gatekeeper_locs, 4326),
+                                    select(gb_sf, ISO, NAME_1)) %>%
+  filter(!is.na(NAME_1))
+
+bto_locs <- bto_gatekeeper %>%
+  select(OSGR10K) %>% distinct() %>%
+  mutate(Easting = 1000*floor(rnrfa::osg_parse(OSGR10K)$easting/1000) + 5000,
+         Northing = 1000*floor(rnrfa::osg_parse(OSGR10K)$northing/1000) + 5000)
+bto_locs_sf <- bto_locs %>% 
+  select(OSGR10K, Easting, Northing) %>%
+  distinct() %>%
+  st_as_sf(coords = c("Easting","Northing"), crs = 27700)
+bto_gatekeeper <- left_join(bto_gatekeeper, bto_locs) 
+
+```
+
+
+
+```{r combine all data}
+all_data <-  select(ukbms_gatekeeper, SITE_CODE,
+                    Year = YEAR, Response = Gatekeeper_Abundance,
+                    Easting, Northing, Length, Survey = Survey_type) %>%
+  filter(SITE_CODE %in% ukbms_gatekeeper_locs_gb$SITE_CODE) %>%
+  mutate(SITE_CODE = as.character(SITE_CODE)) %>%
+  full_join(select(bto_gatekeeper, SITE_CODE = OSGR10K, Easting, Northing,
+                   Response = Gatekeeper, Number_Obs, List_Length, Year) %>%
+              mutate(Survey = "BTO")) %>%
+  mutate(YRnm = Year - 2004,
+         Number_Obs = Number_Obs/30,
+         List_Length = List_Length/10,
+         Length = Length/2000) %>%
+  filter(!is.na(Survey) & Year > 2004 & Year < 2015)
+```
+
+
+```{r UKBMS loc plot, fig.dim = c(8.8,6), fig.cap='Figure S1. UKBMS locations and Gatekeeper abundance by year. Gatekeeper abundance is presented as log(Abundance + 1).'}
+all_data %>%
+  filter(Survey == "UKBMS") %>%
+  select(Year, Response, Easting, Northing) %>%
+  mutate(Gatekeeper = log(Response + 1)) %>%
+  st_as_sf(coords = c("Easting", "Northing"), crs = 27700) %>%
+  ggplot() +
+  geom_sf(data = gb_sf, fill = NA) +
+  geom_sf(aes(colour = Gatekeeper), size = 0.5) +
+  facet_wrap(~Year, nrow = 2) +
+  scale_colour_viridis_c(name = "log(GK + 1)") +
+  theme_void() + 
+  coord_sf(xlim = c(65000,655000), ylim = c(0,1010000))+
+  theme(strip.text = element_text(face = "bold", size = 10, hjust = 0.2))
+
+```
+
+```{r BTO loc plot, fig.dim = c(8.8,6), fig.cap='Figure S2. BTO locations and counts of Gatekeeper observations within the 10km square by year. Number of Gatekeeper observations is presented as log(Observations + 1).'}
+all_data %>%
+  filter(Survey == "BTO") %>%
+  select(Year, Response, Easting, Northing) %>%
+  mutate(Gatekeeper = log(Response + 1)) %>%
+  st_as_sf(coords = c("Easting", "Northing"), crs = 27700) %>%
+  ggplot() +
+  geom_sf(data = gb_sf, fill = NA) +
+  geom_sf(aes(colour = Gatekeeper), size = 0.5) +
+  facet_wrap(~Year, nrow = 2) +
+  scale_colour_viridis_c(name = "log(GK + 1)") +
+  theme_void() + 
+  coord_sf(xlim = c(65000,655000), ylim = c(0,1010000)) +
+  theme(strip.text = element_text(face = "bold", size = 10, hjust = 0.2))
+
+```
+
+
+```{r set up matern kernel}
+ngrp <- max(all_data$YRnm)
+```
+
+```{r UKBMS only model}
+resultUKBMS <- readRDS("Outputs/resultUKBMS_rho80.rds")
+```
+
+```{r BTO only model}
+resultBTO <- readRDS("Outputs/resultBTO_rho80.rds")
+```
+
+```{r shared sptemp only}
+resultj <- readRDS("Outputs/result_joint_rho80.rds")
+```
+
+```{r inla mesh creation}
+# first convert basin to points (with only a few points, simplifying to nearest 100m)
+gb_bnd_pts <- gb_sf %>%
+  st_union() %>%
+  st_simplify(dTolerance = 5000) %>%
+  st_cast("POINT") %>%
+  st_transform(crs=27700) %>%
+  st_coordinates()
+gb_concave <- concaveman::concaveman(gb_bnd_pts)
+gb_poly <- Orcs::coords2Polygons(gb_concave, ID = "GB")
+mesh_brr <- inla.sp2segment(gb_poly)
+mesh <- inla.mesh.2d(boundary = mesh_brr, max.edge = c(50000,300000))
+```
+
+
+```{r set up inla mesh projector for plotting}
+gb_sf2 <- st_transform(gb_sf, crs = 27700)
+gb_pts <- data.frame(X = rep(seq(60000,655000,5000),196),
+                     Y = rep(seq(5000,980000,5000), each = 120)) %>%
+  st_as_sf(crs = 27700, coords = c("X","Y"), remove = FALSE) %>%
+  st_join(gb_sf2, left = FALSE)
+# Extract mean spatial random field - 5km resolution?
+nmesh <- mesh$n
+proj2 <- inla.mesh.projector(mesh, loc = as_Spatial(gb_pts))
+```
+
+
+```{r bto sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S3. Spatio-temporal field for BTO only model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
+# setting limits of scales to -4 and 10 as range is from -8 and 10 overall and
+# -8 to -4 is basically just zero on the log scale
+plot_list <- lapply(1:ngrp, function(i){
+  j <- i*nmesh - nmesh + 1
+  xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$mean[j:(j+nmesh-1)]) %>%
+    as.data.frame()
+  colnames(xmeantemp) <- "value"
+  xmeantemp <- xmeantemp %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(value))
+  
+  ggplot(xmeantemp) +
+    geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+    theme_void() +
+    scale_fill_viridis_c(limits = c(-4,8), oob = scales::oob_squish, 
+                         option = "plasma", name = "mean") +
+    ggtitle(paste("Year:",i+2004)) +
+    coord_equal()
+})
+wrap_plots(plot_list, guides = "collect", nrow = 2)
+```
+
+
+```{r ukbms sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S4. Spatio-temporal field for UKBMS only model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
+# setting limits of scales to -4 and 10 as range is from -8 and 10 overall and
+# -8 to -4 is basically just zero on the log scale
+plot_list <- lapply(1:ngrp, function(i){
+  j <- i*nmesh - nmesh + 1
+  xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+    as.data.frame()
+  colnames(xmeantemp) <- "value"
+  xmeantemp <- xmeantemp %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(value))
+  
+  ggplot(xmeantemp) +
+    geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+    theme_void() +
+    scale_fill_viridis_c(limits = c(-4,8), oob = scales::oob_squish, 
+                         option = "plasma", name = "mean") +
+    ggtitle(paste("Year:",i+2004)) +
+    coord_equal()
+})
+wrap_plots(plot_list, guides = "collect", nrow = 2)
+```
+
+
+```{r joint3 sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S5. Spatio-temporal field for joint model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
+# setting limits of scales to -4 and 10 as range is from -8 and 10 overall and
+# -8 to -4 is basically just zero on the log scale
+plot_list <- lapply(1:ngrp, function(i){
+  j <- i*nmesh - nmesh + 1
+  xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+    as.data.frame()
+  colnames(xmeantemp) <- "value"
+  xmeantemp <- xmeantemp %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(value))
+  
+  ggplot(xmeantemp) +
+    geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value),
+              colour = NA) +
+    theme_void() +
+    scale_fill_viridis_c(limits = c(-4,8), oob = scales::oob_squish, 
+                         option = "plasma", name = "mean") +
+    ggtitle(paste("Year:",i+2004)) +
+    coord_equal()
+})
+wrap_plots(plot_list, guides = "collect", nrow = 2)
+
+```
+
+
+```{r all models 2010 spatial field sd plot, fig.dim = c(7.9,8.6), fig.cap = 'Figure S6. Standard deviation of spatial field for all models in 2005 (top) and 2010 (bottom), values greater than 5 are shown as 5.'}
+i <- 1
+j <- i*nmesh - nmesh + 1
+xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$sd[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+bto_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,5), oob = scales::oob_squish, 
+                       option = "magma", name = "sd") +
+  ggtitle(paste("BTO model:",i+2004)) +
+  coord_equal()
+
+xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$sd[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+ukbms_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,5), oob = scales::oob_squish, 
+                       option = "magma", name = "sd") +
+  ggtitle(paste("UKBMS model:",i+2004)) +
+  coord_equal()
+
+xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$sd[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+joint_plot <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value),
+            colour = NA) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,5), oob = scales::oob_squish, 
+                       option = "magma", name = "sd") +
+  ggtitle(paste("Joint model:",i+2004)) +
+  coord_equal()
+
+# 2010
+i <- 6
+j <- i*nmesh - nmesh + 1
+xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$sd[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+bto_plot2 <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,5), oob = scales::oob_squish, 
+                       option = "magma", name = "sd") +
+  ggtitle(paste("BTO model:",i+2004)) +
+  coord_equal()
+
+xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$sd[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+ukbms_plot2 <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value)) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,5), oob = scales::oob_squish, 
+                       option = "magma", name = "sd") +
+  ggtitle(paste("UKBMS model:",i+2004)) +
+  coord_equal()
+
+xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$sd[j:(j+nmesh-1)]) %>%
+  as.data.frame()
+colnames(xmeantemp) <- "value"
+xmeantemp <- xmeantemp %>%
+  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  filter(!is.na(value))
+
+joint_plot2 <- ggplot(xmeantemp) +
+  geom_tile(data = xmeantemp, aes(x = X, y = Y, fill = value),
+            colour = NA) +
+  theme_void() +
+  scale_fill_viridis_c(limits = c(0,5), oob = scales::oob_squish, 
+                       option = "magma", name = "sd") +
+  ggtitle(paste("Joint model:",i+2004)) +
+  coord_equal()
+
+bto_plot + ukbms_plot + joint_plot +
+  bto_plot2 + ukbms_plot2 + joint_plot2 + 
+  plot_layout(ncol = 3, guides = "collect")
+```
+
+
+```{r bto difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S7. Change in spatial field from year to year in BTO only model. Results are shown as change on the log scale.'}
+# Plot change in spatial field
+plot_titles_diff <- paste0(2006:2014," - ",
+                           2005:2013)
+plot_list <- lapply(2:ngrp, function(i){
+  i1 <- i - 1
+  j1 <- i1*nmesh - nmesh + 1
+  old_spfld <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$mean[j1:(j1 + nmesh - 1)]) %>%
+    as.data.frame()
+  colnames(old_spfld) <- "init_value"
+  old_spfld <- old_spfld %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(init_value))
+  
+  j <- i*nmesh - nmesh + 1
+  xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$mean[j:(j+nmesh-1)]) %>%
+    as.data.frame()
+  colnames(xmeantemp) <- "value"
+  xmeantemp <- xmeantemp %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(value)) %>%
+    left_join(old_spfld, by = c("X","Y")) %>%
+    mutate(diff = value - init_value)
+  
+  ggplot(xmeantemp) +
+    geom_raster(data = xmeantemp, aes(x = X, y = Y, fill = diff)) +
+    scale_fill_distiller(palette = "BrBG", limits = c(-0.8,0.8), 
+                         oob = scales::squish,
+                         name = "Change") +
+    theme_void() +
+    coord_fixed() +
+    ggtitle(plot_titles_diff[i1])
+}
+)
+wrap_plots(plot_list, guides = "collect")
+```
+
+```{r ukbms difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S8. Change in spatial field from year to year in UKBMS only model. Results are shown as change on the log scale.'}
+# Plot change in spatial field
+plot_titles_diff <- paste0(2006:2014," - ",
+                           2005:2013)
+plot_list <- lapply(2:ngrp, function(i){
+  i1 <- i - 1
+  j1 <- i1*nmesh - nmesh + 1
+  old_spfld <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$mean[j1:(j1 + nmesh - 1)]) %>%
+    as.data.frame()
+  colnames(old_spfld) <- "init_value"
+  old_spfld <- old_spfld %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(init_value))
+  
+  j <- i*nmesh - nmesh + 1
+  xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+    as.data.frame()
+  colnames(xmeantemp) <- "value"
+  xmeantemp <- xmeantemp %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(value)) %>%
+    left_join(old_spfld, by = c("X","Y")) %>%
+    mutate(diff = value - init_value)
+  
+  ggplot(xmeantemp) +
+    geom_raster(data = xmeantemp, aes(x = X, y = Y, fill = diff)) +
+    scale_fill_distiller(palette = "BrBG", limits = c(-0.8,0.8), 
+                         oob = scales::squish,
+                         name = "Change") +
+    theme_void() +
+    coord_fixed() +
+    ggtitle(plot_titles_diff[i1])
+}
+)
+wrap_plots(plot_list, guides = "collect")
+```
+
+```{r joint v3 difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S9. Change in spatial field from year to year in joint model. Results are shown as change on the log scale.'}
+# Plot change in spatial field
+plot_titles_diff <- paste0(2006:2014," - ",
+                           2005:2013)
+plot_list <- lapply(2:ngrp, function(i){
+  i1 <- i - 1
+  j1 <- i1*nmesh - nmesh + 1
+  old_spfld <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$mean[j1:(j1 + nmesh - 1)]) %>%
+    as.data.frame()
+  colnames(old_spfld) <- "init_value"
+  old_spfld <- old_spfld %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(init_value))
+  
+  j <- i*nmesh - nmesh + 1
+  xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$mean[j:(j+nmesh-1)]) %>%
+    as.data.frame()
+  colnames(xmeantemp) <- "value"
+  xmeantemp <- xmeantemp %>%
+    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    filter(!is.na(value)) %>%
+    left_join(old_spfld, by = c("X","Y")) %>%
+    mutate(diff = value - init_value)
+  
+  ggplot(xmeantemp) +
+    geom_raster(data = xmeantemp, aes(x = X, y = Y, fill = diff)) +
+    scale_fill_distiller(palette = "BrBG", limits = c(-0.8,0.8), 
+                         oob = scales::squish,
+                         name = "Change") +
+    theme_void() +
+    coord_fixed() +
+    ggtitle(plot_titles_diff[i1])
+}
+)
+wrap_plots(plot_list, guides = "collect")
+```
+
+
+```{r read in river shapefile and find connections, warning = FALSE}
+# new river structure file
+river_struct <- st_read("Outputs/River_data/DigitalRiver.shp", quiet = TRUE)
+
+# get starting points of each linestring
+start_point <- st_cast(river_struct, "POINT") %>%
+  group_by(OBJECTID) %>%
+  filter(row_number() == 1L) %>%
+  mutate(START_OBJECTID = OBJECTID)
+
+# get intersections of starting points and linestrings
+intersect_list <- st_intersects(start_point, river_struct)
+
+connections <- lapply(1:length(intersect_list), function(i){
+  start_objectid <- start_point$START_OBJECTID[i]
+  end_objectids <- start_point$START_OBJECTID[intersect_list[[i]]]
+  
+  dat <- data.frame(start_objectid, end_objectids)
+})
+connection_df <- do.call(rbind, connections) %>%
+  filter(start_objectid != end_objectids)
+```
+
+
+```{r convert river to network and cluster}
+river_graph <- graph_from_edgelist(as.matrix(mutate(connection_df, 
+                                                    across(.cols = everything(),
+                                                           .fns = as.character))))
+
+# find connected components of river_graph and limit to largest
+gr_comp <- components(river_graph)
+
+large_comp <- names(gr_comp$membership[gr_comp$membership==20])
+
+thames_river <- filter(river_struct, OBJECTID %in% large_comp)
+
+thames_network <- subgraph(river_graph, vids = large_comp)
+
+
+riv_lengths <- st_length(thames_river)
+names(riv_lengths) <- thames_river$OBJECTID
+riv_lengths <- riv_lengths[vertex_attr(thames_network, "name")]
+vertex_attr(thames_network, "length") <- riv_lengths
+
+
+# test different clustering methods
+clusters <- cluster_fast_greedy(as.undirected(thames_network, 
+                                              mode =  "collapse"))
+riv_mem <- data.frame(Cluster = as.character(clusters$membership),
+                      OBJECTID = clusters$names)
+
+thames_river <- filter(river_struct, OBJECTID %in% large_comp) %>%
+  mutate(OBJECTID = as.character(OBJECTID)) %>%
+  inner_join(riv_mem)
+```
+
+
+```{r Match points to river network, fig.dim =c(6,8),fig.cap='Figure S10. Total number of sites per river section per survey'}
+clus_counts <- read.csv("Outputs/cluster_counts_thamesareas.csv",
+                        colClasses = c("character","integer","integer"))
+
+p1 <- thames_river %>%
+  left_join(mutate(clus_counts, across(c(CS,EA), \(x) na_if(x, 0))), 
+            by = "Cluster") %>%
+  ggplot() +
+  geom_sf(aes(colour = EA)) +
+  scale_colour_viridis_c(name = "Sites", limits = c(1,27))+
+  ggtitle("a. Environment Agency")
+
+p2 <- thames_river %>%
+  left_join(mutate(clus_counts, across(c(CS,EA), \(x) na_if(x, 0))), 
+            by = "Cluster") %>%
+  ggplot() +
+  geom_sf(aes(colour = CS)) +
+  scale_colour_viridis_c(name = "Sites", limits = c(1,27)) +
+  ggtitle("b. Anglers' Riverfly Monitoring Initiative")
+
+p1 + p2 + plot_layout(guides = "collect", ncol = 1) & theme_void()
+
+```
+
+```{r read in thames models}
+ea.mod <- readRDS("Outputs/ea_mod_areal_310123.rds")
+j.mod <- readRDS("Outputs/jmod_areal_310123.rds")
+```
+
+```{r, fig.width = 8, fig.height = 8, fig.cap="Figure S11. Spatio-temporal effect for the EA only model (a) and the joint model (b)"}
+N_Area <- 137
+N_Year <- 5
+sptemp_plot <- function(mod){
+  thames_river %>% left_join(
+    mod$summary.random$ID.Area %>%
+      mutate(ID.Area = rep(seq_len(N_Area),2*N_Year),
+             ID.Year = rep(seq_len(N_Year), each=2*N_Area) + 2014) %>%
+      group_by(ID.Area, ID.Year) %>%
+      summarise(mean = sum(mean), .groups = "drop") %>%
+      mutate(Cluster = as.character(ID.Area)),
+    by = "Cluster", relationship = "many-to-many") %>%
+    ggplot() +
+    geom_sf(aes(colour = mean)) +
+    facet_wrap(~ID.Year, nrow = 2) +
+    theme_void() +
+    scale_colour_viridis_c(limits = c(-6,6), oob = scales::squish)
+}
+lapply(list(ea.mod, j.mod), sptemp_plot) %>%
+  wrap_plots(ncol = 1, guides = "collect") + plot_annotation(tag_levels = "a")
+```
+
+
+```{r, fig.width = 8, fig.height = 6, fig.cap="Figure S12. Standard deviation of the spatio-temporal effect for the EA only model (top) and the joint model (bottom). The two components of the model, i.e. the area specific IID part (left) and the spatially structured Besag part (right), are plotted separately."}
+N_Area <- 137
+N_Year <- 5
+sptemp_plot <- function(mod, mod_name, modpart = c("area specific","spatially structured")){
+  mod_fil <- if(modpart == "area specific"){
+    mod$summary.random$ID.Area %>%
+      mutate(ID.Area = rep(seq_len(N_Area),2*N_Year),
+             ID.Year = rep(seq_len(N_Year), each=2*N_Area) + 2014) %>%
+      filter(ID.Year == 2015) %>%
+      group_by(ID.Area) %>%
+      filter(ID == min(ID)) %>%
+      ungroup() %>%
+      mutate(Cluster = as.character(ID.Area))
+  } else{
+    mod$summary.random$ID.Area %>%
+      mutate(ID.Area = rep(seq_len(N_Area),2*N_Year),
+             ID.Year = rep(seq_len(N_Year), each=2*N_Area) + 2014) %>%
+      filter(ID.Year == 2015) %>%
+      group_by(ID.Area) %>%
+      filter(ID == max(ID)) %>%
+      ungroup() %>%
+      mutate(Cluster = as.character(ID.Area))
+  }
+  thames_river %>% left_join(mod_fil, by = "Cluster") %>%
+    ggplot() +
+    geom_sf(aes(colour = sd)) +
+    theme_void() +
+    scale_colour_viridis_c(limits = c(0,1.25), oob = scales::squish,
+                         option = "magma") +
+    ggtitle(paste0(mod_name,": ",modpart))
+}
+mapply(sptemp_plot, list(ea.mod, ea.mod, j.mod, j.mod), 
+       c("EA only","EA only","Joint","Joint"),
+       rep(c("area specific","spatially structured"),2),
+       SIMPLIFY = FALSE) %>%
+  wrap_plots(ncol = 2, guides = "collect")
+```
+
+```{r cs areal data effect, fig.width=8, fig.height=8, fig.cap='Figure S13. ARMI specific spatial field from joint model, with mean prediction (log scale) on the top and standard deviation on the bottom'}
+# Hard-coding unique(na.omit(All_env$ID.Area.CS)) as CS_areaID for speed
+CS_areaID <- c(4, 12, 13, 18, 19, 22, 23, 28, 30, 31, 33, 35, 37, 39, 41, 42, 46, 47,
+               49, 50, 56, 58, 63, 65, 66, 67, 71, 72, 76, 78, 80, 84, 86, 89, 91, 
+               95, 103, 104, 106, 109, 113, 115, 116, 119)
+mean_pl <- thames_river %>% left_join(
+  j.mod$summary.random$ID.Area.CS %>%
+    mutate(ID.Area = CS_areaID) %>%
+    mutate(Cluster = as.character(ID.Area)),
+  by = "Cluster") %>%
+  ggplot() +
+  geom_sf(aes(colour = mean), size = 1) +
+  scale_colour_viridis_c(limits = c(-2,2), oob = scales::squish) +
+  theme_void()
+sd_pl <- thames_river %>% left_join(
+  j.mod$summary.random$ID.Area.CS %>%
+    mutate(ID.Area = CS_areaID) %>%
+    mutate(Cluster = as.character(ID.Area)),
+  by = "Cluster") %>%
+  ggplot() +
+  geom_sf(aes(colour = sd), size = 1) +
+  scale_colour_viridis_c(limits = c(0,1), oob = scales::squish,
+                         option = "magma") +
+  theme_void()
+mean_pl + sd_pl + plot_layout(ncol = 1)
+```
