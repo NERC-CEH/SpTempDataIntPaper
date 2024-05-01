@@ -1,18 +1,46 @@
 ---
-title: "Spatio-temporal data integration for species distribution modelling in R-INLA: Supplementary figures"
+title: "Spatio-temporal data integration for species distribution modelling in R-INLA: Supplementary Information"
 author:
- - "Fiona Seaton, Susan Jarvis, Pete Henrys"
- - "*UK Centre for Ecology & Hydrology, Lancaster, UK*"
-date: "`r format(Sys.time(), '%B %Y')`"
+ - "Fiona Seaton*, Susan Jarvis, Pete Henrys"
+ - "*UK Centre for Ecology & Hydrology, Lancaster Environment Centre, Lancaster, UK*"
+ - "*Corresponding author email: fseaton@ceh.ac.uk"
 output: 
   word_document:
-    reference_docx: "~/Custom Office Templates/pandoc_templ.docx"
+    reference_docx: "pandoc_templ_windowsfonts.docx"
 ---
 
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, message=FALSE, dpi = 300)
 ```
+
+# Supplementary Methods
+
+Further details on the models used within each case study are given below. 
+
+## Point data - Gatekeeper butterfly
+
+Gatekeeper butterfly abundance is modelled as a negative binomial response of the linear predictor ($\mu$) at any given location ($s$), time ($t$), and dataset ($k$). The overdispersion parameter ($n_k$) is dataset-specific.
+
+$$ Gatekeeper_{s,t,k} \sim \mathrm{NB}(\mu_{s,t,k} , n_k) $$
+$$ \mu_{s,t,k} = \alpha_k + TransectLength_{k=UKBMS} + ListLength_{k=BTO} + \omega_{s,t} $$ 
+
+The linear predictor is composed of a dataset-specific intercept ($\alpha_k$), dataset-specific survey effort parameters ($TransectLength_{k=UKBMS}$, $ListLength_{k=BTO}$), and a shared spatio-temporal effect ($\omega_{s,t}$). The spatio-temporal effect is a Gaussian random field (approximated through the SPDE approach), with spatial covariance determined by a Matérn function ($\nu$ set to 1), that changes each year according to an order one autoregressive process (AR1). Penalised complexity priors were used for both the Matérn covariance function and the AR1 process. Further specifications of the model are as described in the main manuscript text.
+
+<br>
+
+## Areal data - Caddisfly
+
+Within the caddisfly model, caddisfly abundance is again modelled as a negative binomial response of the linear predictor ($\mu$) at any given location ($s$), time ($t$), and dataset ($k$). The overdispersion parameter ($n_k$) is dataset-specific.
+
+$$ Caddisfly_{s,t,k} \sim \mathrm{NB}(\mu_{s,t,k} , n_k) $$
+$$ \mu_{s,t,k} = \alpha_k + Season_t + \omega_{s,t} +\phi_{s,k=ARMI} $$ 
+
+The linear predictor is composed of a dataset-specific intercept ($\alpha_k$), a shared seasonal effect ($Season_t$), a shared spatio-temporal effect ($\omega_{s,t}$), and an ARMI-specific spatial effect ($\phi_{s,k=ARMI}$). The seasonal effect is specified upon the month of observation, and does not vary by either location or dataset. The spatio-temporal effect is a Besag York Mollié (BYM) model that operates on areas as defined through clustering all river stretches within the Thames catchment into 137 clusters. This BYM model updates every year according to an order one autoregressive process. The ARMI-specific spatial effect is an IID effect on each area (i.e. cluster of river stretches). Penalised complexity priors were used for the seasonal, spatio-temporal and spatial effects. Further specifications of the model are as described in the main manuscript text.
+
+\newpage
+
+# Supplementary Figures
 
 ```{r libraries}
 library(data.table)
@@ -168,15 +196,15 @@ ngrp <- max(all_data$YRnm)
 ```
 
 ```{r UKBMS only model}
-resultUKBMS <- readRDS("Outputs/resultUKBMS_rho80.rds")
+resultUKBMS <- readRDS("Outputs/resultUKBMS_rho80_km.rds")
 ```
 
 ```{r BTO only model}
-resultBTO <- readRDS("Outputs/resultBTO_rho80.rds")
+resultBTO <- readRDS("Outputs/resultBTO_rho80_km.rds")
 ```
 
 ```{r shared sptemp only}
-resultj <- readRDS("Outputs/result_joint_rho80.rds")
+resultj <- readRDS("Outputs/result_joint_rho80_km.rds")
 ```
 
 ```{r inla mesh creation}
@@ -186,27 +214,33 @@ gb_bnd_pts <- gb_sf %>%
   st_simplify(dTolerance = 5000) %>%
   st_cast("POINT") %>%
   st_transform(crs=27700) %>%
-  st_coordinates()
+  st_coordinates() %>%
+  apply(2, function(x) x/1000)
 gb_concave <- concaveman::concaveman(gb_bnd_pts)
 gb_poly <- Orcs::coords2Polygons(gb_concave, ID = "GB")
 mesh_brr <- inla.sp2segment(gb_poly)
-mesh <- inla.mesh.2d(boundary = mesh_brr, max.edge = c(50000,300000))
+mesh <- inla.mesh.2d(boundary = mesh_brr, max.edge = c(50,300))
 ```
 
+```{r mesh plot, fig.dim = c(5,7.5), fig.cap = 'Figure S3. The spatial mesh used within the SPDE model.'}
+plot(mesh, main = FALSE, asp = 1)
+```
 
 ```{r set up inla mesh projector for plotting}
 gb_sf2 <- st_transform(gb_sf, crs = 27700)
 gb_pts <- data.frame(X = rep(seq(60000,655000,5000),196),
                      Y = rep(seq(5000,980000,5000), each = 120)) %>%
   st_as_sf(crs = 27700, coords = c("X","Y"), remove = FALSE) %>%
-  st_join(gb_sf2, left = FALSE)
+  st_join(gb_sf2, left = FALSE) %>%
+  st_coordinates() %>%
+  apply(2, function(x) x/1000)
 # Extract mean spatial random field - 5km resolution?
 nmesh <- mesh$n
-proj2 <- inla.mesh.projector(mesh, loc = as_Spatial(gb_pts))
+proj2 <- inla.mesh.projector(mesh, loc = gb_pts)
 ```
 
 
-```{r bto sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S3. Spatio-temporal field for BTO only model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
+```{r bto sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S4. Spatio-temporal field for BTO only model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
 # setting limits of scales to -4 and 10 as range is from -8 and 10 overall and
 # -8 to -4 is basically just zero on the log scale
 plot_list <- lapply(1:ngrp, function(i){
@@ -215,7 +249,7 @@ plot_list <- lapply(1:ngrp, function(i){
     as.data.frame()
   colnames(xmeantemp) <- "value"
   xmeantemp <- xmeantemp %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(value))
   
   ggplot(xmeantemp) +
@@ -230,7 +264,7 @@ wrap_plots(plot_list, guides = "collect", nrow = 2)
 ```
 
 
-```{r ukbms sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S4. Spatio-temporal field for UKBMS only model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
+```{r ukbms sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S5. Spatio-temporal field for UKBMS only model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
 # setting limits of scales to -4 and 10 as range is from -8 and 10 overall and
 # -8 to -4 is basically just zero on the log scale
 plot_list <- lapply(1:ngrp, function(i){
@@ -239,7 +273,7 @@ plot_list <- lapply(1:ngrp, function(i){
     as.data.frame()
   colnames(xmeantemp) <- "value"
   xmeantemp <- xmeantemp %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(value))
   
   ggplot(xmeantemp) +
@@ -254,7 +288,7 @@ wrap_plots(plot_list, guides = "collect", nrow = 2)
 ```
 
 
-```{r joint3 sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S5. Spatio-temporal field for joint model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
+```{r joint3 sptemp plot, fig.dim = c(8.8,6), fig.cap='Figure S6. Spatio-temporal field for joint model. Results are shown on the log scale and values lower than -4 are shown as -4.'}
 # setting limits of scales to -4 and 10 as range is from -8 and 10 overall and
 # -8 to -4 is basically just zero on the log scale
 plot_list <- lapply(1:ngrp, function(i){
@@ -263,7 +297,7 @@ plot_list <- lapply(1:ngrp, function(i){
     as.data.frame()
   colnames(xmeantemp) <- "value"
   xmeantemp <- xmeantemp %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(value))
   
   ggplot(xmeantemp) +
@@ -280,14 +314,14 @@ wrap_plots(plot_list, guides = "collect", nrow = 2)
 ```
 
 
-```{r all models 2010 spatial field sd plot, fig.dim = c(7.9,8.6), fig.cap = 'Figure S6. Standard deviation of spatial field for all models in 2005 (top) and 2010 (bottom), values greater than 5 are shown as 5.'}
+```{r all models 2010 spatial field sd plot, fig.dim = c(7.9,8.6), fig.cap = 'Figure S7. Standard deviation of spatial field for all models in 2005 (top) and 2010 (bottom), values greater than 5 are shown as 5.'}
 i <- 1
 j <- i*nmesh - nmesh + 1
 xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$sd[j:(j+nmesh-1)]) %>%
   as.data.frame()
 colnames(xmeantemp) <- "value"
 xmeantemp <- xmeantemp %>%
-  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
   filter(!is.na(value))
 
 bto_plot <- ggplot(xmeantemp) +
@@ -302,7 +336,7 @@ xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$sd[
   as.data.frame()
 colnames(xmeantemp) <- "value"
 xmeantemp <- xmeantemp %>%
-  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
   filter(!is.na(value))
 
 ukbms_plot <- ggplot(xmeantemp) +
@@ -317,7 +351,7 @@ xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$sd[j:(j
   as.data.frame()
 colnames(xmeantemp) <- "value"
 xmeantemp <- xmeantemp %>%
-  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
   filter(!is.na(value))
 
 joint_plot <- ggplot(xmeantemp) +
@@ -336,7 +370,7 @@ xmeantemp <- inla.mesh.project(proj2, resultBTO$summary.random$BTO.field$sd[j:(j
   as.data.frame()
 colnames(xmeantemp) <- "value"
 xmeantemp <- xmeantemp %>%
-  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
   filter(!is.na(value))
 
 bto_plot2 <- ggplot(xmeantemp) +
@@ -351,7 +385,7 @@ xmeantemp <- inla.mesh.project(proj2, resultUKBMS$summary.random$ukbms.field$sd[
   as.data.frame()
 colnames(xmeantemp) <- "value"
 xmeantemp <- xmeantemp %>%
-  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
   filter(!is.na(value))
 
 ukbms_plot2 <- ggplot(xmeantemp) +
@@ -366,7 +400,7 @@ xmeantemp <- inla.mesh.project(proj2, resultj$summary.random$ukbms.field$sd[j:(j
   as.data.frame()
 colnames(xmeantemp) <- "value"
 xmeantemp <- xmeantemp %>%
-  mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+  mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
   filter(!is.na(value))
 
 joint_plot2 <- ggplot(xmeantemp) +
@@ -384,7 +418,7 @@ bto_plot + ukbms_plot + joint_plot +
 ```
 
 
-```{r bto difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S7. Change in spatial field from year to year in BTO only model. Results are shown as change on the log scale.'}
+```{r bto difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S8. Change in spatial field from year to year in BTO only model. Results are shown as change on the log scale.'}
 # Plot change in spatial field
 plot_titles_diff <- paste0(2006:2014," - ",
                            2005:2013)
@@ -395,7 +429,7 @@ plot_list <- lapply(2:ngrp, function(i){
     as.data.frame()
   colnames(old_spfld) <- "init_value"
   old_spfld <- old_spfld %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(init_value))
   
   j <- i*nmesh - nmesh + 1
@@ -403,7 +437,7 @@ plot_list <- lapply(2:ngrp, function(i){
     as.data.frame()
   colnames(xmeantemp) <- "value"
   xmeantemp <- xmeantemp %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(value)) %>%
     left_join(old_spfld, by = c("X","Y")) %>%
     mutate(diff = value - init_value)
@@ -421,7 +455,7 @@ plot_list <- lapply(2:ngrp, function(i){
 wrap_plots(plot_list, guides = "collect")
 ```
 
-```{r ukbms difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S8. Change in spatial field from year to year in UKBMS only model. Results are shown as change on the log scale.'}
+```{r ukbms difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S9. Change in spatial field from year to year in UKBMS only model. Results are shown as change on the log scale.'}
 # Plot change in spatial field
 plot_titles_diff <- paste0(2006:2014," - ",
                            2005:2013)
@@ -432,7 +466,7 @@ plot_list <- lapply(2:ngrp, function(i){
     as.data.frame()
   colnames(old_spfld) <- "init_value"
   old_spfld <- old_spfld %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(init_value))
   
   j <- i*nmesh - nmesh + 1
@@ -440,7 +474,7 @@ plot_list <- lapply(2:ngrp, function(i){
     as.data.frame()
   colnames(xmeantemp) <- "value"
   xmeantemp <- xmeantemp %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(value)) %>%
     left_join(old_spfld, by = c("X","Y")) %>%
     mutate(diff = value - init_value)
@@ -458,7 +492,7 @@ plot_list <- lapply(2:ngrp, function(i){
 wrap_plots(plot_list, guides = "collect")
 ```
 
-```{r joint v3 difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S9. Change in spatial field from year to year in joint model. Results are shown as change on the log scale.'}
+```{r joint v3 difference plot, fig.dim=c(5.9,7.9), fig.cap='Figure S10. Change in spatial field from year to year in joint model. Results are shown as change on the log scale.'}
 # Plot change in spatial field
 plot_titles_diff <- paste0(2006:2014," - ",
                            2005:2013)
@@ -469,7 +503,7 @@ plot_list <- lapply(2:ngrp, function(i){
     as.data.frame()
   colnames(old_spfld) <- "init_value"
   old_spfld <- old_spfld %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(init_value))
   
   j <- i*nmesh - nmesh + 1
@@ -477,7 +511,7 @@ plot_list <- lapply(2:ngrp, function(i){
     as.data.frame()
   colnames(xmeantemp) <- "value"
   xmeantemp <- xmeantemp %>%
-    mutate(X = gb_pts$X, Y = gb_pts$Y) %>%
+    mutate(X = gb_pts[,"X"], Y = gb_pts[,"Y"]) %>%
     filter(!is.na(value)) %>%
     left_join(old_spfld, by = c("X","Y")) %>%
     mutate(diff = value - init_value)
@@ -552,8 +586,14 @@ thames_river <- filter(river_struct, OBJECTID %in% large_comp) %>%
   inner_join(riv_mem)
 ```
 
+```{r river-cluster-plot, fig.dim = c(6,4), fig.cap='Figure S11. Thames catchment coloured by cluster components used in modelling'}
+ggplot(thames_river, aes(colour = Cluster)) + 
+  geom_sf() + theme_void() + theme(legend.position = "none")
+```
 
-```{r Match points to river network, fig.dim =c(6,8),fig.cap='Figure S10. Total number of sites per river section per survey'}
+
+
+```{r Match points to river network, fig.dim =c(6,8),fig.cap='Figure S12. Total number of sites per river section per survey'}
 clus_counts <- read.csv("Outputs/cluster_counts_thamesareas.csv",
                         colClasses = c("character","integer","integer"))
 
@@ -582,7 +622,7 @@ ea.mod <- readRDS("Outputs/ea_mod_areal_310123.rds")
 j.mod <- readRDS("Outputs/jmod_areal_310123.rds")
 ```
 
-```{r, fig.width = 8, fig.height = 8, fig.cap="Figure S11. Spatio-temporal effect for the EA only model (a) and the joint model (b)"}
+```{r, fig.width = 8, fig.height = 8, fig.cap="Figure S13. Spatio-temporal effect for the EA only model (a) and the joint model (b)"}
 N_Area <- 137
 N_Year <- 5
 sptemp_plot <- function(mod){
@@ -605,7 +645,7 @@ lapply(list(ea.mod, j.mod), sptemp_plot) %>%
 ```
 
 
-```{r, fig.width = 8, fig.height = 6, fig.cap="Figure S12. Standard deviation of the spatio-temporal effect for the EA only model (top) and the joint model (bottom). The two components of the model, i.e. the area specific IID part (left) and the spatially structured Besag part (right), are plotted separately."}
+```{r, fig.width = 8, fig.height = 6, fig.cap="Figure S14. Standard deviation of the spatio-temporal effect for the EA only model (top) and the joint model (bottom). The two components of the model, i.e. the area specific IID part (left) and the spatially structured Besag part (right), are plotted separately."}
 N_Area <- 137
 N_Year <- 5
 sptemp_plot <- function(mod, mod_name, modpart = c("area specific","spatially structured")){
@@ -643,7 +683,7 @@ mapply(sptemp_plot, list(ea.mod, ea.mod, j.mod, j.mod),
   wrap_plots(ncol = 2, guides = "collect")
 ```
 
-```{r cs areal data effect, fig.width=8, fig.height=8, fig.cap='Figure S13. ARMI specific spatial field from joint model, with mean prediction (log scale) on the top and standard deviation on the bottom'}
+```{r cs areal data effect, fig.width=8, fig.height=8, fig.cap='Figure S15. ARMI specific spatial field from joint model, with mean prediction (log scale) on the top and standard deviation on the bottom'}
 # Hard-coding unique(na.omit(All_env$ID.Area.CS)) as CS_areaID for speed
 CS_areaID <- c(4, 12, 13, 18, 19, 22, 23, 28, 30, 31, 33, 35, 37, 39, 41, 42, 46, 47,
                49, 50, 56, 58, 63, 65, 66, 67, 71, 72, 76, 78, 80, 84, 86, 89, 91, 
