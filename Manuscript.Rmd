@@ -1,4 +1,4 @@
----
+﻿---
 title: "Spatio-temporal data integration for species distribution modelling in R-INLA"
 author:
  - "Fiona Seaton*, Susan Jarvis, Pete Henrys"
@@ -43,7 +43,7 @@ inla.setOption(scale.model.default=FALSE)
 
 # Data and code availability
 
-The UKBMS data is publicly available from the NERC Environmental Information Data Centre © copyright and database right Butterfly Conservation, the Centre for Ecology & Hydrology, British Trust for Ornithology, and the Joint Nature Conservation Committee [@UKBMSIndices; @UKBMSLocs]. The BTO data was provided by the British Trust for Ornithology, accessed through NBN Atlas website (CC-BY-NC), for more information see: https://registry.nbnatlas.org/public/show/dr529 [@BTO2023]. The EA caddisfly data is available online from the water quality data archive © Crown Copyright 2022 (https://environment.data.gov.uk/water-quality/), and the ARMI caddisfly data is available online from the Riverfly Partnership (https://riverflies.org).
+The UKBMS data is publicly available from the NERC Environmental Information Data Centre © copyright and database right Butterfly Conservation, the Centre for Ecology & Hydrology, British Trust for Ornithology, and the Joint Nature Conservation Committee [@UKBMSIndices; @UKBMSLocs]. The BTO data was provided by the British Trust for Ornithology, accessed through NBN Atlas website (CC-BY-NC), for more information see: https://registry.nbnatlas.org/public/show/dr529 [@BTO2023]. The EA caddisfly data is available online from the water quality data archive © Crown Copyright 2022 (https://environment.data.gov.uk/water-quality/view/), and the ARMI caddisfly data is available online from the Riverfly Partnership (https://riverflies.org).
 
 # Keywords
 
